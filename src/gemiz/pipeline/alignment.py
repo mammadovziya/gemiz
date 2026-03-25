@@ -175,7 +175,7 @@ def parse_alignment(tsv_path: str) -> dict[str, list[dict]]:
             "identity": float(row["pident"]),
             "evalue":   float(row["evalue"]),
             "bitscore": float(row["bits"]),
-            "coverage": float(row["qcov"]),
+            "coverage": round(float(row["qcov"]) * 100, 1),  # fraction -> %
         }
         results.setdefault(row["query"], []).append(hit)
 

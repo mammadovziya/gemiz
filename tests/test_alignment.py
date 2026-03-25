@@ -90,7 +90,7 @@ def test_align_proteins(tmp_path):
         query_faa=faa,
         reference_db=str(REFERENCE),
         output_dir=str(tmp_path / "alignment"),
-        sensitivity=9.5,
+        sensitivity=7.5,
         threads=4,
     )
 
@@ -116,7 +116,7 @@ def test_parse_alignment(tmp_path):
         query_faa=faa,
         reference_db=str(REFERENCE),
         output_dir=str(tmp_path / "alignment"),
-        sensitivity=9.5,
+        sensitivity=7.5,
         threads=4,
     )
 
@@ -163,7 +163,7 @@ def test_classify_proteins(tmp_path):
         query_faa=faa,
         reference_db=str(REFERENCE),
         output_dir=str(tmp_path / "alignment"),
-        sensitivity=9.5,
+        sensitivity=7.5,
         threads=4,
     )
     alignment = parse_alignment(tsv)

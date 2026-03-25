@@ -44,6 +44,11 @@ embeddings = [
     "torch>=2.3",
     "esm>=3.0",
     "faiss-cpu>=1.8",
+    "huggingface-hub>=0.23",
+]
+gpu = [
+    "gemiz[embeddings]",
+    "faiss-gpu>=1.7",
 ]
 full = [
     "gemiz[embeddings]",
