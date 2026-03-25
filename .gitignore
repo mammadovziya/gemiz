@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Virtual environments
+gemiz-env/
+gemiz-env-linux/
+venv/
+.venv/
+env/
+
+# Data / large files
+data/genomes/*.fna
+data/genomes/*.fna.gz
+data/models/*.xml
+data/databases/
+*.dmnd          # DIAMOND databases
+*.h5            # embedding stores
+*.faiss         # FAISS indexes
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / config
+.env
+*.pem
