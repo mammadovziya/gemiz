@@ -160,18 +160,24 @@ def run_full_pipeline(
 
                 # Resolve reference FAISS index
                 if esm_db_path is not None:
-                    ref_db_dir = Path(esm_db_path)
+                    ref_db_dir = Path(esm_db_path).resolve()
                 else:
                     ref_db_dir = work_dir / "esm_ref_db"
 
                 faiss_path = ref_db_dir / "reference.faiss"
                 ids_path = ref_db_dir / "reference_ids.json"
+                npz_path = ref_db_dir / "reference_embeddings.npz"
 
-                if faiss_path.exists() and ids_path.exists():
-                    print(f"      Using cached ESM C database: {ref_db_dir}")
+                if (faiss_path.exists()
+                        and ids_path.exists()
+                        and npz_path.exists()):
+                    print(f"      Using cached ESM C database: "
+                          f"{ref_db_dir}")
                 else:
                     from gemiz.embedding.database import generate_reference_db
-                    print(f"      Building ESM C reference database...")
+                    print("      Building ESM C reference database "
+                          f"at {ref_db_dir} ...")
+                    ref_db_dir.mkdir(parents=True, exist_ok=True)
                     generate_reference_db(
                         reference_faa_path, str(ref_db_dir)
                     )
