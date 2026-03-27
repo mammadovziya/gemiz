@@ -9,7 +9,7 @@ def test_help():
     runner = CliRunner()
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
-    assert "reconstruct" in result.output
+    assert "carve" in result.output
 
 
 def test_version():
@@ -19,8 +19,9 @@ def test_version():
     assert "0.1.0" in result.output
 
 
-def test_reconstruct_help():
+def test_carve_help():
     runner = CliRunner()
-    result = runner.invoke(main, ["reconstruct", "--help"])
+    result = runner.invoke(main, ["carve", "--help"])
     assert result.exit_code == 0
-    assert "Prodigal" in result.output
+    assert "pyrodigal" in result.output
+    assert "--output" in result.output

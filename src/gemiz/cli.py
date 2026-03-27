@@ -1,15 +1,22 @@
-"""gemiz CLI — entry point for all sub-commands."""
+"""gemiz CLI -- entry point for all sub-commands."""
 
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.panel import Panel
+from rich.rule import Rule
 
 console = Console()
+
+# Default data paths (relative to cwd; overridable via options)
+_DEFAULT_MODEL     = "data/universal/iML1515.xml"
+_DEFAULT_REF_FAA   = "data/reference/iML1515_proteins.faa"
+_DEFAULT_FEAT_TBL  = "data/reference/ecoli_feature_table.txt"
 
 # ---------------------------------------------------------------------------
 # Root group
@@ -20,19 +27,19 @@ console = Console()
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Enable verbose logging.")
 @click.pass_context
 def main(ctx: click.Context, verbose: bool) -> None:
-    """gemiz — reconstruct genome-scale metabolic models from raw .fna files.
+    """gemiz -- reconstruct genome-scale metabolic models from raw .fna files.
 
     \b
     Typical usage:
-        gemiz reconstruct genome.fna --output model.xml
-        gemiz reconstruct genome.fna --db bigg --solver highs
+        gemiz carve genome.fna -o model.xml
+        gemiz carve genome.fna --no-esm --threads 8
     """
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
 
 
 # ---------------------------------------------------------------------------
-# reconstruct
+# carve  (primary command)
 # ---------------------------------------------------------------------------
 
 @main.command()
@@ -41,84 +48,165 @@ def main(ctx: click.Context, verbose: bool) -> None:
     "--output", "-o",
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
     default=None,
-    show_default=True,
-    help="Output .xml path (default: <genome_stem>.xml next to input).",
+    help="Output .xml path (default: <genome_stem>_model.xml).",
 )
 @click.option(
-    "--db",
-    type=click.Choice(["bigg", "modelseed", "both"], case_sensitive=False),
-    default="both",
-    show_default=True,
-    help="Reference database(s) to use.",
+    "--template",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=f"Universal model .xml (default: {_DEFAULT_MODEL}).",
 )
 @click.option(
-    "--solver",
-    type=click.Choice(["highs", "glpk"], case_sensitive=False),
-    default="highs",
-    show_default=True,
-    help="LP/MILP solver. HiGHS is recommended.",
+    "--reference",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=f"Reference proteins .faa (default: {_DEFAULT_REF_FAA}).",
+)
+@click.option(
+    "--feature-table",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=f"NCBI feature table for ID mapping (default: {_DEFAULT_FEAT_TBL}).",
 )
 @click.option(
     "--threads", "-t",
     type=int,
-    default=1,
+    default=4,
     show_default=True,
-    help="Number of CPU threads for Prodigal / DIAMOND.",
+    help="CPU threads for MMseqs2.",
+)
+@click.option(
+    "--esm-db",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Pre-built ESM C reference DB directory (skips index generation).",
 )
 @click.option(
     "--no-esm", is_flag=True, default=False,
     help="Skip ESM C embeddings (faster but less accurate).",
 )
+@click.option(
+    "--high-conf",
+    type=float,
+    default=50.0,
+    show_default=True,
+    help="Identity %% above which MMseqs2 is fully trusted.",
+)
+@click.option(
+    "--low-conf",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Identity %% below which sequence alignment is unreliable.",
+)
+@click.option(
+    "--min-growth",
+    type=float,
+    default=0.1,
+    show_default=True,
+    help="Minimum biomass flux (h^-1) required.",
+)
+@click.option(
+    "--sensitivity",
+    type=float,
+    default=7.5,
+    show_default=True,
+    help="MMseqs2 sensitivity (4=fast, 7.5=balanced, 9.5=sensitive).",
+)
 @click.pass_context
-def reconstruct(
+def carve(
     ctx: click.Context,
     genome: Path,
     output: Path | None,
-    db: str,
-    solver: str,
+    template: Path | None,
+    reference: Path | None,
+    feature_table: Path | None,
+    esm_db: Path | None,
     threads: int,
     no_esm: bool,
+    high_conf: float,
+    low_conf: float,
+    min_growth: float,
+    sensitivity: float,
 ) -> None:
-    """Reconstruct a GEM from a raw genome FASTA file (GENOME).
+    """Reconstruct a GEM from a raw genome FASTA file.
 
-    Steps executed:
+    Full pipeline:
+
     \b
-      1. Gene calling        — Prodigal
-      2. Sequence alignment  — DIAMOND vs BiGG / ModelSEED
-      3. Protein embeddings  — ESM C 600M  (skipped with --no-esm)
-      4. Reaction gapfilling — HiGHS MILP
-      5. Model export        — SBML / COBRApy
+      1. Gene calling        -- pyrodigal
+      2. Protein alignment   -- MMseqs2
+      3. Protein embeddings  -- ESM C 600M  (skip with --no-esm)
+      4. Reaction scoring    -- adaptive weighting
+      5. MILP carving        -- HiGHS
+      6. Model export        -- SBML (.xml)
     """
-    verbose: bool = ctx.obj["verbose"]
-
+    # ---- resolve defaults ----
     if output is None:
-        output = genome.with_suffix(".xml")
+        output = genome.parent / f"{genome.stem}_model.xml"
+    if template is None:
+        template = Path(_DEFAULT_MODEL)
+    if reference is None:
+        reference = Path(_DEFAULT_REF_FAA)
+    if feature_table is None:
+        ft = Path(_DEFAULT_FEAT_TBL)
+        feature_table = ft if ft.exists() else None
 
-    console.print(
-        Panel.fit(
-            f"[bold cyan]gemiz reconstruct[/]\n"
-            f"  genome : [green]{genome}[/]\n"
-            f"  output : [green]{output}[/]\n"
-            f"  db     : [yellow]{db}[/]\n"
-            f"  solver : [yellow]{solver}[/]\n"
-            f"  threads: [yellow]{threads}[/]\n"
-            f"  ESM C  : [yellow]{'disabled' if no_esm else 'enabled'}[/]",
-            title="[bold]gemiz[/]",
-            border_style="cyan",
-        )
-    )
+    # ---- validate inputs ----
+    if not template.exists():
+        console.print(f"[bold red]Error:[/] template model not found: {template}")
+        console.print("Download iML1515 or specify --template path.")
+        sys.exit(1)
+    if not reference.exists():
+        console.print(f"[bold red]Error:[/] reference proteins not found: {reference}")
+        sys.exit(1)
 
-    from gemiz.pipeline import run_pipeline  # lazy import keeps CLI startup fast
+    # ---- header ----
+    console.print()
+    console.print(Rule("[bold cyan]gemiz v0.1.0[/]", style="cyan"))
+    console.print(f"  Genome:     [green]{genome}[/]")
+    console.print(f"  Output:     [green]{output}[/]")
+    console.print(f"  Template:   [yellow]{template}[/]")
+    console.print(f"  Reference:  [yellow]{reference}[/]")
+    console.print(f"  Threads:    [yellow]{threads}[/]")
+    esm_label = "disabled" if no_esm else f"enabled{f' (db: {esm_db})' if esm_db else ''}"
+    console.print(f"  ESM C:      [yellow]{esm_label}[/]")
+    console.print(f"  Min growth: [yellow]{min_growth}[/]")
+    console.print(Rule(style="cyan"))
 
-    run_pipeline(
-        genome=genome,
-        output=output,
-        db=db,
-        solver=solver,
-        threads=threads,
+    # ---- run pipeline ----
+    from gemiz.reconstruction.pipeline import run_full_pipeline
+
+    result = run_full_pipeline(
+        genome_fna=str(genome),
+        output_xml=str(output),
+        universal_model_path=str(template),
+        reference_faa_path=str(reference),
+        feature_table_path=str(feature_table) if feature_table else None,
+        esm_db_path=str(esm_db) if esm_db else None,
+        high_conf=high_conf,
+        low_conf=low_conf,
+        min_growth=min_growth,
         use_esm=not no_esm,
-        verbose=verbose,
+        threads=threads,
+        sensitivity=sensitivity,
     )
+
+    # ---- summary ----
+    console.print()
+    console.print(Rule(style="cyan"))
+    total = result["total_time"]
+    console.print(f"  [bold green]Done in {total:.1f}s[/]")
+    console.print()
+    console.print("  Model summary:")
+    console.print(f"    Reactions:   [cyan]{result['n_reactions']}[/]")
+    console.print(f"    Metabolites: [cyan]{result['n_metabolites']}[/]")
+    console.print(f"    Genes:       [cyan]{result['n_genes']}[/]")
+    gr = result["growth_rate"]
+    grow_mark = "[green]YES[/]" if result["can_grow"] else "[red]NO[/]"
+    console.print(f"    Growth rate: [cyan]{gr:.4f}[/] h^-1  {grow_mark}")
+    console.print(Rule(style="cyan"))
+    console.print()
 
 
 # ---------------------------------------------------------------------------

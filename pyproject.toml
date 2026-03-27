@@ -77,6 +77,11 @@ gemiz = ["bin/mmseqs/*"]
 line-length = 100
 target-version = "py312"
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (run with: pytest -m slow)",
+]
+
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
