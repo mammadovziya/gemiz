@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -49,6 +50,12 @@ def main(ctx: click.Context, verbose: bool) -> None:
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
     default=None,
     help="Output .xml path (default: <genome_stem>_model.xml).",
+)
+@click.option(
+    "--organism",
+    default=None,
+    help="Organism name (loads config from data/organisms/<name>/config.json). "
+         "Run setup_organism.py first to create the config.",
 )
 @click.option(
     "--template",
@@ -118,6 +125,7 @@ def carve(
     ctx: click.Context,
     genome: Path,
     output: Path | None,
+    organism: str | None,
     template: Path | None,
     reference: Path | None,
     feature_table: Path | None,
@@ -141,16 +149,42 @@ def carve(
       5. MILP carving        -- HiGHS
       6. Model export        -- SBML (.xml)
     """
-    # ---- resolve defaults ----
+    # ---- load organism config if specified ----
+    org_config: dict = {}
+    if organism is not None:
+        config_path = Path(f"data/organisms/{organism}/config.json")
+        if not config_path.exists():
+            console.print(f"[bold red]Error:[/] organism config not found: {config_path}")
+            console.print(f"Run: python scripts/setup_organism.py {organism} --ncbi-assembly <accession>")
+            sys.exit(1)
+        with open(config_path) as f:
+            org_config = json.load(f)
+        console.print(f"  Organism:   [green]{organism}[/] (loaded {config_path})")
+
+    # ---- resolve defaults (CLI flags override organism config) ----
     if output is None:
         output = genome.parent / f"{genome.stem}_model.xml"
     if template is None:
-        template = Path(_DEFAULT_MODEL)
+        if "template" in org_config:
+            template = Path(org_config["template"])
+        else:
+            template = Path(_DEFAULT_MODEL)
     if reference is None:
-        reference = Path(_DEFAULT_REF_FAA)
+        if "proteins" in org_config:
+            reference = Path(org_config["proteins"])
+        else:
+            reference = Path(_DEFAULT_REF_FAA)
     if feature_table is None:
-        ft = Path(_DEFAULT_FEAT_TBL)
-        feature_table = ft if ft.exists() else None
+        if "feature_table" in org_config:
+            ft = Path(org_config["feature_table"])
+            feature_table = ft if ft.exists() else None
+        else:
+            ft = Path(_DEFAULT_FEAT_TBL)
+            feature_table = ft if ft.exists() else None
+    if esm_db is None and "esm_db" in org_config:
+        db = Path(org_config["esm_db"])
+        if db.exists():
+            esm_db = db
 
     # ---- validate inputs ----
     if not template.exists():

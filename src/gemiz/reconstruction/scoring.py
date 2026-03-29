@@ -145,6 +145,23 @@ def extract_gpr_associations(model: cobra.Model) -> dict[str, dict]:
 # Reference ID mapping (NCBI accession -> locus_tag)
 # ---------------------------------------------------------------------------
 
+_LOCUS_UNDERSCORE_RE = re.compile(r"^([A-Za-z]+)_(\d+)$")
+
+
+def _locus_tag_variant(tag: str) -> str | None:
+    """Return the underscore-variant of a locus tag, or None if no variant exists.
+
+    ``BSU_00010`` -> ``BSU00010`` and vice versa.
+    """
+    m = _LOCUS_UNDERSCORE_RE.match(tag)
+    if m:
+        return m.group(1) + m.group(2)
+    m2 = re.match(r"^([A-Za-z]+)(\d+)$", tag)
+    if m2:
+        return f"{m2.group(1)}_{m2.group(2)}"
+    return None
+
+
 def parse_reference_id_map(
     feature_table_path: str | Path | None = None,
     reference_faa_path: str | Path | None = None,
@@ -338,6 +355,14 @@ def build_protein_score_map(
     for gene_id in all_gpr_genes:
         identity   = ref_best_identity.get(gene_id, 0.0)
         similarity = ref_best_similarity.get(gene_id, 0.0)
+
+        # Locus tag variant fallback: iYO844 uses BSU00010 but the
+        # NCBI feature table lists BSU_00010.  Try the other form.
+        if identity == 0 and similarity == 0:
+            variant = _locus_tag_variant(gene_id)
+            if variant:
+                identity   = ref_best_identity.get(variant, 0.0)
+                similarity = ref_best_similarity.get(variant, 0.0)
 
         if identity > 0 or similarity > 0:
             s = merge_protein_scores(identity, similarity, high_conf, low_conf)

@@ -27,7 +27,6 @@ MILP formulation
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 import numpy as np
 
@@ -322,6 +321,162 @@ def extract_carved_model(
     model.name = "GEM carved by gemiz"
 
     return model
+
+
+# ---------------------------------------------------------------------------
+# Gap-filling (Step 5.5)
+# ---------------------------------------------------------------------------
+
+def gapfill_model(
+    carved_model: "cobra.Model",
+    template_model: "cobra.Model",
+    reaction_scores: "dict[str, float] | None" = None,
+    timeout: float = 60.0,
+) -> "tuple[cobra.Model, list[str]]":
+    """Gap-fill a carved model to restore biomass growth.
+
+    Tries COBRApy's MILP-based gapfill first (finds minimum reaction set).
+    Falls back to greedy backward-elimination if that exceeds *timeout* seconds.
+
+    Parameters
+    ----------
+    carved_model
+        Output of :func:`carve_model` that cannot grow.
+    template_model
+        Universal template containing all candidate reactions.
+    reaction_scores
+        Per-reaction scores from Step 4, used to prioritise candidates in the
+        greedy fallback (higher-score reactions are tried last for removal,
+        so they stay in the model).
+    timeout
+        Seconds before abandoning COBRApy MILP gapfill and switching to greedy.
+
+    Returns
+    -------
+    (filled_model, added_reaction_ids)
+    """
+    sol = carved_model.optimize()
+    if sol.status == "optimal" and sol.objective_value > 1e-6:
+        return carved_model.copy(), []
+
+    carved_ids = {r.id for r in carved_model.reactions}
+    candidates = [r for r in template_model.reactions if r.id not in carved_ids]
+
+    if not candidates:
+        print("[gemiz]   No candidate reactions available for gap-filling.")
+        return carved_model.copy(), []
+
+    print(f"[gemiz]   {len(candidates)} candidate reactions. "
+          f"Trying MILP gapfill (timeout {timeout:.0f}s)...")
+    added_ids = _try_cobra_gapfill(carved_model, template_model, timeout)
+
+    if added_ids is None:
+        print("[gemiz]   MILP gapfill timed out — switching to greedy heuristic...")
+        added_ids = _greedy_gapfill(
+            carved_model, candidates, reaction_scores or {}
+        )
+    elif not added_ids:
+        print("[gemiz]   MILP gapfill found no solution — switching to greedy heuristic...")
+        added_ids = _greedy_gapfill(
+            carved_model, candidates, reaction_scores or {}
+        )
+    else:
+        print(f"[gemiz]   MILP gapfill found {len(added_ids)} reactions to add.")
+
+    # Build the filled model
+    filled = carved_model.copy()
+    rxn_by_id = {r.id: r for r in template_model.reactions}
+    to_add = [rxn_by_id[rid].copy() for rid in added_ids if rid in rxn_by_id]
+    if to_add:
+        filled.add_reactions(to_add)
+
+    return filled, added_ids
+
+
+def _try_cobra_gapfill(
+    carved_model: "cobra.Model",
+    template_model: "cobra.Model",
+    timeout: float,
+) -> "list[str] | None":
+    """Run COBRApy gapfill in a daemon thread; return None if it times out."""
+    import threading
+
+    result: list = [None]
+
+    def _run() -> None:
+        try:
+            from cobra.flux_analysis import gapfill
+            solutions = gapfill(carved_model, template_model,
+                                demand_reactions=False)
+            if solutions and solutions[0]:
+                result[0] = [r.id for r in solutions[0]]
+            else:
+                result[0] = []
+        except Exception as exc:  # noqa: BLE001
+            print(f"[gemiz]   COBRApy gapfill error: {exc}")
+            result[0] = []
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        return None  # timed out
+    return result[0]
+
+
+def _greedy_gapfill(
+    carved_model: "cobra.Model",
+    candidates: "list[cobra.Reaction]",
+    reaction_scores: "dict[str, float]",
+) -> "list[str]":
+    """Greedy backward-elimination gap-filling.
+
+    1. Adds *all* candidates to a working copy.
+    2. Confirms the augmented model can grow.
+    3. Removes candidates one by one in ascending score order (least
+       important first); keeps a reaction only when its removal kills growth.
+    """
+    # Try adding everything first
+    test_model = carved_model.copy()
+    test_model.add_reactions([r.copy() for r in candidates])
+
+    sol = test_model.optimize()
+    if sol.status != "optimal" or sol.objective_value <= 1e-6:
+        print("[gemiz]   WARNING: model cannot grow even with full template. "
+              "Gap-filling cannot help.")
+        return []
+
+    # Sort ascending by score — try removing low-score (less important) ones first
+    candidates_sorted = sorted(
+        candidates,
+        key=lambda r: reaction_scores.get(r.id, 0.0),
+    )
+
+    for rxn in candidates_sorted:
+        # Check the reaction is still in the model (may have been permanently removed)
+        try:
+            test_rxn = test_model.reactions.get_by_id(rxn.id)
+        except KeyError:
+            continue
+
+        # Temporarily remove and test
+        with test_model:
+            test_model.remove_reactions([test_rxn], remove_orphans=False)
+            sol = test_model.optimize()
+            still_grows = (sol.status == "optimal"
+                           and sol.objective_value > 1e-6)
+
+        if still_grows:
+            # Dispensable — permanently remove it
+            test_model.remove_reactions(
+                [test_model.reactions.get_by_id(rxn.id)],
+                remove_orphans=False,
+            )
+
+    # Whatever remains (beyond the original carved reactions) is the minimal set
+    carved_ids = {r.id for r in carved_model.reactions}
+    return [r.id for r in test_model.reactions if r.id not in carved_ids]
 
 
 # ---------------------------------------------------------------------------
