@@ -19,6 +19,14 @@ _DEFAULT_MODEL     = "data/universal/iML1515.xml"
 _DEFAULT_REF_FAA   = "data/reference/iML1515_proteins.faa"
 _DEFAULT_FEAT_TBL  = "data/reference/ecoli_feature_table.txt"
 
+# Universal DB paths (built by scripts/build_universal_db.py)
+_UNIVERSAL_TEMPLATE = "data/universal/db/universal_template.xml"
+_UNIVERSAL_FAA      = "data/universal/db/universal_proteins.faa"
+_UNIVERSAL_MMSEQS   = "data/universal/db/mmseqs_db"
+
+# CarveMe bacteria universe (preferred template for universal mode)
+_CARVEME_UNIVERSE   = "data/universal/carveme_bacteria.xml"
+
 # ---------------------------------------------------------------------------
 # Root group
 # ---------------------------------------------------------------------------
@@ -120,6 +128,13 @@ def main(ctx: click.Context, verbose: bool) -> None:
     show_default=True,
     help="MMseqs2 sensitivity (4=fast, 7.5=balanced, 9.5=sensitive).",
 )
+@click.option(
+    "--media",
+    type=click.Choice(["M9", "LB", "M9[glyc]", "M9[-O2]", "LB[-O2]"], case_sensitive=True),
+    default="M9",
+    show_default=True,
+    help="Growth medium for universal mode (constrains exchange reactions).",
+)
 @click.pass_context
 def carve(
     ctx: click.Context,
@@ -136,6 +151,7 @@ def carve(
     low_conf: float,
     min_growth: float,
     sensitivity: float,
+    media: str,
 ) -> None:
     """Reconstruct a GEM from a raw genome FASTA file.
 
@@ -164,27 +180,59 @@ def carve(
     # ---- resolve defaults (CLI flags override organism config) ----
     if output is None:
         output = genome.parent / f"{genome.stem}_model.xml"
-    if template is None:
-        if "template" in org_config:
-            template = Path(org_config["template"])
-        else:
-            template = Path(_DEFAULT_MODEL)
-    if reference is None:
-        if "proteins" in org_config:
-            reference = Path(org_config["proteins"])
-        else:
-            reference = Path(_DEFAULT_REF_FAA)
-    if feature_table is None:
-        if "feature_table" in org_config:
-            ft = Path(org_config["feature_table"])
-            feature_table = ft if ft.exists() else None
-        else:
-            ft = Path(_DEFAULT_FEAT_TBL)
-            feature_table = ft if ft.exists() else None
-    if esm_db is None and "esm_db" in org_config:
-        db = Path(org_config["esm_db"])
-        if db.exists():
-            esm_db = db
+
+    # Detect universal mode: no --organism and no explicit --template/--reference
+    _univ_faa      = Path(_UNIVERSAL_FAA)
+    _univ_mmseqs   = Path(_UNIVERSAL_MMSEQS)
+    _carveme_univ  = Path(_CARVEME_UNIVERSE)
+    _univ_template = Path(_UNIVERSAL_TEMPLATE)
+    _universal_mode = (
+        organism is None
+        and template is None
+        and reference is None
+        and _univ_faa.exists()
+    )
+
+    if _universal_mode:
+        console.print(f"  Mode:       [cyan]universal[/] "
+                      f"(data/universal/db/)")
+        # Prefer CarveMe bacteria universe (5532 rxns, proper Growth objective)
+        if template is None:
+            if _carveme_univ.exists():
+                template = _carveme_univ
+            elif _univ_template.exists():
+                template = _univ_template
+            else:
+                console.print("[bold red]Error:[/] No universal template found. "
+                              f"Expected {_carveme_univ} or {_univ_template}")
+                sys.exit(1)
+        if reference is None:
+            reference = _univ_faa
+        # feature_table left as None — scoring uses universal_gpr.csv directly
+        if esm_db is None and _univ_mmseqs.exists():
+            esm_db = _univ_mmseqs
+    else:
+        if template is None:
+            if "template" in org_config:
+                template = Path(org_config["template"])
+            else:
+                template = Path(_DEFAULT_MODEL)
+        if reference is None:
+            if "proteins" in org_config:
+                reference = Path(org_config["proteins"])
+            else:
+                reference = Path(_DEFAULT_REF_FAA)
+        if feature_table is None:
+            if "feature_table" in org_config:
+                ft = Path(org_config["feature_table"])
+                feature_table = ft if ft.exists() else None
+            else:
+                ft = Path(_DEFAULT_FEAT_TBL)
+                feature_table = ft if ft.exists() else None
+        if esm_db is None and "esm_db" in org_config:
+            db = Path(org_config["esm_db"])
+            if db.exists():
+                esm_db = db
 
     # ---- validate inputs ----
     if not template.exists():
@@ -206,6 +254,8 @@ def carve(
     esm_label = "disabled" if no_esm else f"enabled{f' (db: {esm_db})' if esm_db else ''}"
     console.print(f"  ESM C:      [yellow]{esm_label}[/]")
     console.print(f"  Min growth: [yellow]{min_growth}[/]")
+    if _universal_mode:
+        console.print(f"  Media:      [yellow]{media}[/]")
     console.print(Rule(style="cyan"))
 
     # ---- run pipeline ----
@@ -224,6 +274,7 @@ def carve(
         use_esm=not no_esm,
         threads=threads,
         sensitivity=sensitivity,
+        media=media if _universal_mode else None,
     )
 
     # ---- summary ----

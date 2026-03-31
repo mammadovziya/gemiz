@@ -18,9 +18,9 @@ Thresholds based on Rost (1999) "twilight zone of sequence alignment":
 
 from __future__ import annotations
 
+import csv
 import re
 from pathlib import Path
-from typing import Optional
 
 import cobra
 
@@ -189,6 +189,26 @@ def parse_reference_id_map(
     """
     id_map: dict[str, str] = {}
 
+    # Strategy 0: universal proteins FAA with namespaced headers
+    # Header format: >org|locus_tag|accession  (built by build_universal_db.py)
+    if reference_faa_path is not None:
+        faa = Path(reference_faa_path)
+        if faa.exists():
+            with open(faa, encoding="utf-8") as f:
+                for line in f:
+                    if not line.startswith(">"):
+                        continue
+                    header = line[1:].split()[0]  # e.g. iML1515|b1779|NP_416370.1
+                    parts = header.split("|")
+                    if len(parts) == 3:
+                        _org, locus_tag, accession = parts
+                        if accession and locus_tag:
+                            id_map[accession] = locus_tag
+            if id_map:
+                print(f"[gemiz] ID map: {len(id_map)} accession -> locus_tag "
+                      f"entries from universal FAA headers")
+                return id_map
+
     # Strategy 1: NCBI feature table
     if feature_table_path is not None:
         ft = Path(feature_table_path)
@@ -239,45 +259,50 @@ def diagnose_id_mapping(
     mmseqs_hits: dict[str, list[dict]],
     gpr_associations: dict[str, dict],
     id_map: dict[str, str] | None = None,
+    reference_faa_path: str | Path | None = None,
 ) -> None:
     """Print diagnostic information about ID overlap between alignments and GPR.
 
     Helps debug the common mismatch between NCBI accessions (``NP_414676.1``)
     in MMseqs2 output and locus tags (``b4025``) in GPR rules.
     """
-    # Collect ref IDs from MMseqs2
+    universal_mode = (
+        reference_faa_path is not None
+        and "universal" in str(reference_faa_path)
+    )
+
+    # Collect ref IDs from MMseqs2 (resolved to gene IDs)
     mmseqs_ref_ids: set[str] = set()
+    mmseqs_raw_ids: set[str] = set()
     for hits in mmseqs_hits.values():
         for h in hits:
-            mmseqs_ref_ids.add(h["ref_id"])
+            mmseqs_raw_ids.add(h["ref_id"])
+            mmseqs_ref_ids.add(
+                _resolve_ref_id(h["ref_id"], id_map or {}, universal_mode)
+            )
 
     # Collect gene IDs from GPR
     gpr_genes: set[str] = set()
     for a in gpr_associations.values():
         gpr_genes.update(a["genes"])
 
-    # Direct overlap
+    # Direct overlap (after resolution)
     direct_overlap = mmseqs_ref_ids & gpr_genes
 
     print(f"\n[gemiz] === ID Mapping Diagnostic ===")
-    print(f"[gemiz]   MMseqs2 ref IDs:    {len(mmseqs_ref_ids)}")
+    if universal_mode:
+        print(f"[gemiz]   Mode: universal (pipe-delimited ref IDs)")
+    print(f"[gemiz]   MMseqs2 ref IDs:    {len(mmseqs_raw_ids)}")
+    print(f"[gemiz]   Resolved gene IDs:  {len(mmseqs_ref_ids)}")
     print(f"[gemiz]   GPR gene IDs:       {len(gpr_genes)}")
-    print(f"[gemiz]   Direct overlap:     {len(direct_overlap)}")
+    print(f"[gemiz]   Overlap:            {len(direct_overlap)} "
+          f"({100*len(direct_overlap)/max(len(gpr_genes),1):.1f}% of GPR genes)")
 
     # Show sample IDs
-    sample_mmseqs = sorted(mmseqs_ref_ids)[:5]
+    sample_resolved = sorted(mmseqs_ref_ids)[:5]
     sample_gpr = sorted(gpr_genes)[:5]
-    print(f"[gemiz]   Sample MMseqs2 IDs: {sample_mmseqs}")
-    print(f"[gemiz]   Sample GPR IDs:     {sample_gpr}")
-
-    if id_map:
-        # Translate MMseqs2 IDs and check overlap
-        translated = {id_map.get(rid, rid) for rid in mmseqs_ref_ids}
-        mapped_overlap = translated & gpr_genes
-        print(f"[gemiz]   After ID mapping:   {len(mapped_overlap)} overlap "
-              f"({100*len(mapped_overlap)/max(len(gpr_genes),1):.1f}% of GPR genes)")
-    else:
-        print(f"[gemiz]   No ID map provided.")
+    print(f"[gemiz]   Sample resolved IDs: {sample_resolved}")
+    print(f"[gemiz]   Sample GPR IDs:      {sample_gpr}")
 
     print(f"[gemiz] ================================\n")
 
@@ -285,6 +310,19 @@ def diagnose_id_mapping(
 # ---------------------------------------------------------------------------
 # Protein score map
 # ---------------------------------------------------------------------------
+
+def _resolve_ref_id(rid: str, id_map: dict[str, str], universal_mode: bool) -> str:
+    """Resolve a MMseqs2/ESM C ref_id to a GPR-compatible gene ID.
+
+    In universal mode, ref_ids are pipe-delimited: ``org|locus_tag|accession``.
+    Extract the locus_tag directly.  Otherwise, fall back to id_map lookup.
+    """
+    if universal_mode:
+        parts = rid.split("|")
+        if len(parts) == 3:
+            return parts[1]  # locus_tag
+    return id_map.get(rid, rid)
+
 
 def build_protein_score_map(
     mmseqs_hits: dict[str, list[dict]],
@@ -321,8 +359,17 @@ def build_protein_score_map(
     """
     print("[gemiz] Building protein score map...")
 
-    # Load ID mapping (NCBI accession -> locus_tag)
+    # Detect universal mode: ref FAA built by build_universal_db.py
+    # has pipe-delimited headers (org|locus_tag|accession)
+    universal_mode = False
+    if reference_faa_path is not None:
+        universal_mode = "universal" in str(reference_faa_path)
+
+    # Load ID mapping (NCBI accession -> locus_tag) — used in non-universal mode
     id_map = parse_reference_id_map(feature_table_path, reference_faa_path)
+
+    if universal_mode:
+        print("[gemiz] Universal mode: parsing locus tags from pipe-delimited ref IDs")
 
     # Collect all genes that appear in any GPR rule
     all_gpr_genes: set[str] = set()
@@ -330,21 +377,19 @@ def build_protein_score_map(
         all_gpr_genes.update(a["genes"])
 
     # Build reverse index: gene_id -> best (identity, similarity) from any
-    # genome protein that hit it.  Translate ref IDs via id_map.
+    # genome protein that hit it.
     ref_best_identity:   dict[str, float] = {}
     ref_best_similarity: dict[str, float] = {}
 
     for _pid, hits in mmseqs_hits.items():
         for h in hits:
-            rid = h["ref_id"]
-            gene_id = id_map.get(rid, rid)  # translate accession -> locus_tag
+            gene_id = _resolve_ref_id(h["ref_id"], id_map, universal_mode)
             if h["identity"] > ref_best_identity.get(gene_id, 0.0):
                 ref_best_identity[gene_id] = h["identity"]
 
     for _pid, hits in esmc_hits.items():
         for h in hits:
-            rid = h["ref_id"]
-            gene_id = id_map.get(rid, rid)  # translate accession -> locus_tag
+            gene_id = _resolve_ref_id(h["ref_id"], id_map, universal_mode)
             if h["similarity"] > ref_best_similarity.get(gene_id, 0.0):
                 ref_best_similarity[gene_id] = h["similarity"]
 
@@ -465,6 +510,145 @@ def evaluate_gpr_rule(
 
 
 # ---------------------------------------------------------------------------
+# Universal mode — direct protein→reaction scoring via universal_gpr.csv
+# ---------------------------------------------------------------------------
+
+_UNIVERSAL_GPR_CSV = Path("data/universal/db/universal_gpr.csv")
+
+_GPR_GENE_RE = re.compile(r"[A-Za-z0-9_.:-]+")
+
+
+def _load_universal_gpr(
+    csv_path: Path,
+) -> dict[str, list[str]]:
+    """Load universal_gpr.csv and build reaction_id -> [locus_tags].
+
+    Parses the ``gpr`` column to extract gene IDs, collecting all genes
+    across all organisms that are linked to each reaction.
+    """
+    reaction_proteins: dict[str, set[str]] = {}
+
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rxn_id = row["reaction_id"]
+            gpr = row.get("gpr", "").strip()
+            if not gpr:
+                continue
+            # Extract gene IDs from GPR rule (skip 'and', 'or', parens)
+            genes = [
+                tok for tok in _GPR_GENE_RE.findall(gpr)
+                if tok not in ("and", "or")
+            ]
+            if rxn_id not in reaction_proteins:
+                reaction_proteins[rxn_id] = set()
+            reaction_proteins[rxn_id].update(genes)
+
+    return {rid: sorted(genes) for rid, genes in reaction_proteins.items()}
+
+
+def _build_protein_scores_from_hits(
+    mmseqs_hits: dict[str, list[dict]],
+    esmc_hits: dict[str, list[dict]],
+    high_conf: float,
+    low_conf: float,
+) -> dict[str, float]:
+    """Build locus_tag -> score from MMseqs2/ESM C hits.
+
+    Parses pipe-delimited target IDs (``org|locus_tag|accession``) to
+    extract the locus_tag.  Takes the best score per locus_tag.
+    """
+    best_identity:   dict[str, float] = {}
+    best_similarity: dict[str, float] = {}
+
+    for _pid, hits in mmseqs_hits.items():
+        for h in hits:
+            parts = h["ref_id"].split("|")
+            tag = parts[1] if len(parts) == 3 else h["ref_id"]
+            if h["identity"] > best_identity.get(tag, 0.0):
+                best_identity[tag] = h["identity"]
+
+    for _pid, hits in esmc_hits.items():
+        for h in hits:
+            parts = h["ref_id"].split("|")
+            tag = parts[1] if len(parts) == 3 else h["ref_id"]
+            if h["similarity"] > best_similarity.get(tag, 0.0):
+                best_similarity[tag] = h["similarity"]
+
+    # Merge into final scores
+    all_tags = set(best_identity) | set(best_similarity)
+    scores: dict[str, float] = {}
+    for tag in all_tags:
+        identity = best_identity.get(tag, 0.0)
+        similarity = best_similarity.get(tag, 0.0)
+        scores[tag] = merge_protein_scores(identity, similarity,
+                                           high_conf, low_conf)
+
+    return scores
+
+
+def _score_reactions_universal(
+    universal_model: cobra.Model,
+    mmseqs_hits: dict[str, list[dict]],
+    esmc_hits: dict[str, list[dict]],
+    high_conf: float,
+    low_conf: float,
+) -> dict[str, float]:
+    """Universal mode scoring: protein→reaction via universal_gpr.csv.
+
+    Does NOT use the template model's GPRs (CarveMe universe has 0 genes).
+    Instead, loads the GPR mappings from the CSV built by build_universal_db.py
+    and scores each reaction by the best-matching protein.
+    """
+    csv_path = _UNIVERSAL_GPR_CSV
+    if not csv_path.exists():
+        print(f"[gemiz] WARNING: {csv_path} not found. "
+              f"Falling back to model-based scoring.")
+        return {}
+
+    # 1 — reaction → [locus_tags] from CSV
+    reaction_proteins = _load_universal_gpr(csv_path)
+    print(f"[gemiz] Loaded universal_gpr.csv: "
+          f"{len(reaction_proteins)} reactions with GPR data")
+
+    # 2 — locus_tag → score from hits
+    protein_scores = _build_protein_scores_from_hits(
+        mmseqs_hits, esmc_hits, high_conf, low_conf,
+    )
+    print(f"[gemiz] Protein scores: {len(protein_scores)} locus tags scored")
+
+    # 3 — score each reaction in the template model
+    model_rxn_ids = {r.id for r in universal_model.reactions}
+    reaction_scores: dict[str, float] = {}
+
+    n_with_evidence = 0
+    n_penalized = 0
+    n_neutral = 0
+
+    for rxn_id in model_rxn_ids:
+        genes = reaction_proteins.get(rxn_id)
+
+        if genes is None:
+            # Reaction not in CSV — neutral (transport, exchange, etc.)
+            reaction_scores[rxn_id] = 0.0
+            n_neutral += 1
+            continue
+
+        # Find best protein score among all genes linked to this reaction
+        gene_scores = [protein_scores.get(g, 0.0) for g in genes]
+        best = max(gene_scores) if gene_scores else 0.0
+
+        if best > 0:
+            reaction_scores[rxn_id] = best
+            n_with_evidence += 1
+        else:
+            reaction_scores[rxn_id] = NO_EVIDENCE_SCORE
+            n_penalized += 1
+
+    return reaction_scores
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -479,11 +663,12 @@ def compute_reaction_scores(
 ) -> dict[str, float]:
     """Compute a confidence score for every reaction in the model.
 
-    Steps:
-    1. Extract GPR associations
-    2. Build per-gene protein score map
-    3. Evaluate each reaction's GPR rule
-    4. Print summary
+    In universal mode (detected when reference FAA path contains 'universal'),
+    uses direct protein→reaction mapping via universal_gpr.csv, bypassing
+    the template model's GPRs entirely.
+
+    In organism-specific mode, uses the template model's GPR rules with
+    ID mapping through feature tables or FAA headers.
 
     Returns
     -------
@@ -491,6 +676,25 @@ def compute_reaction_scores(
         ``{reaction_id: score}``  where score in [-1.0, 1.0].
     """
     print("[gemiz] Computing reaction scores...")
+
+    # Detect universal mode
+    universal_mode = (
+        reference_faa_path is not None
+        and "universal" in str(reference_faa_path)
+    )
+
+    if universal_mode:
+        print("[gemiz] Universal mode: scoring via universal_gpr.csv")
+        reaction_scores = _score_reactions_universal(
+            universal_model, mmseqs_hits, esmc_hits,
+            high_conf, low_conf,
+        )
+        if reaction_scores:
+            _print_score_summary(reaction_scores)
+            return reaction_scores
+        print("[gemiz] Universal scoring failed, falling back to GPR-based scoring")
+
+    # --- Organism-specific mode (GPR-based) ---
 
     # 1 -- GPR associations
     gpr_assoc = extract_gpr_associations(universal_model)
@@ -503,13 +707,18 @@ def compute_reaction_scores(
     )
 
     # 3 — evaluate every reaction
-    reaction_scores: dict[str, float] = {}
+    reaction_scores = {}
     for rxn_id, assoc in gpr_assoc.items():
         reaction_scores[rxn_id] = evaluate_gpr_rule(
             assoc["rule"], protein_scores, assoc["type"],
         )
 
-    # 4 — summary
+    _print_score_summary(reaction_scores)
+    return reaction_scores
+
+
+def _print_score_summary(reaction_scores: dict[str, float]) -> None:
+    """Print scoring summary statistics."""
     n = len(reaction_scores)
     vals = list(reaction_scores.values())
     strong   = sum(1 for s in vals if s >  0.7)
@@ -530,5 +739,3 @@ def compute_reaction_scores(
                 f"[gemiz] Score range: min={min(vals):.3f}, "
                 f"max={max(vals):.3f}, mean={sum(vals)/n:.3f}"
             )
-
-    return reaction_scores

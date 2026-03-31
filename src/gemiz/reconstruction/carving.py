@@ -82,19 +82,40 @@ def carve_model(
     print(f"[gemiz]   Negative-score reactions: {n_neg}")
     print(f"[gemiz]   Neutral reactions: {n_neu}")
 
+    # ---- detect universal mode (multiple biomass candidates) ----
+    biomass_candidates = milp_data.get("biomass_candidates", [])
+    universal_mode = len(biomass_candidates) > 1
+
+    if universal_mode:
+        # Universal mode: do NOT enforce biomass constraint during carving.
+        # We don't know which biomass is correct for an unknown organism.
+        # Let scoring drive selection, then test growth post-carving.
+        print("[gemiz] Universal mode: no biomass constraint during MILP "
+              "(will test growth post-carving)")
+        milp_data["enforce_biomass"] = False
+    else:
+        milp_data["enforce_biomass"] = True
+
     # ---- solve ----
     print("[gemiz] Solving with HiGHS...")
     result = solve_highs_milp(milp_data, time_limit=300.0)
 
-    if result["status"] == "infeasible":
+    if result["status"] == "infeasible" and milp_data["enforce_biomass"]:
         print("[gemiz] WARNING: Infeasible with min_growth="
-              f"{min_growth}, relaxing to 0.01...")
-        milp_data["min_growth"] = 0.01
+              f"{min_growth}, relaxing to 0.001...")
+        milp_data["min_growth"] = 0.001
+        result = solve_highs_milp(milp_data, time_limit=300.0)
+
+    if result["status"] == "infeasible" and milp_data["enforce_biomass"]:
+        print("[gemiz] WARNING: Still infeasible. "
+              "Removing biomass constraint entirely...")
+        milp_data["enforce_biomass"] = False
         result = solve_highs_milp(milp_data, time_limit=300.0)
 
     if result["status"] == "infeasible":
-        print("[gemiz] WARNING: Still infeasible. "
-              "Using all positive-score reactions as fallback.")
+        print("[gemiz] WARNING: MILP infeasible even without biomass constraint.")
+        print("[gemiz] WARNING: Falling back to all positive-score reactions. "
+              "Model quality may be poor.")
         result["active_reactions"] = [
             i for i in range(n) if scores[i] > 0
         ]
@@ -116,6 +137,92 @@ def carve_model(
     print(f"[gemiz]   Reactions removed: {n - n_kept}")
     print(f"[gemiz]   Metabolites: {len(carved.metabolites)}")
     print(f"[gemiz]   Genes: {len(carved.genes)}")
+
+    # ---- select best biomass (universal template mode) ----
+    biomass_candidates = milp_data.get("biomass_candidates", [])
+    if len(biomass_candidates) > 1:
+        carved = _select_biomass(carved, milp_data["rxn_ids"],
+                                 biomass_candidates)
+
+    return carved
+
+
+# ---------------------------------------------------------------------------
+# Biomass selection (universal template mode)
+# ---------------------------------------------------------------------------
+
+def _select_biomass(
+    carved: "cobra.Model",
+    rxn_ids: list[str],
+    biomass_candidate_indices: list[int],
+) -> "cobra.Model":
+    """Try each candidate biomass reaction and keep the best one.
+
+    Filters candidates strictly: only reactions with 'biomass' in their ID
+    are considered (avoids false positives like PFK being tagged as biomass).
+    Rejects biologically impossible growth rates (> 10 h^-1).
+    """
+    candidate_ids = [rxn_ids[i] for i in biomass_candidate_indices]
+
+    # Filter to candidates that survived carving
+    present = []
+    for rid in candidate_ids:
+        try:
+            carved.reactions.get_by_id(rid)
+            present.append(rid)
+        except KeyError:
+            continue
+
+    if not present:
+        print("[gemiz]   No candidate biomass reactions survived carving.")
+        return carved
+
+    # Strict filter: only reactions with 'biomass' in the ID
+    biomass_filtered = [rid for rid in present if "biomass" in rid.lower()]
+
+    # Fallback: try 'growth' in the ID
+    if not biomass_filtered:
+        biomass_filtered = [rid for rid in present if "growth" in rid.lower()]
+
+    if not biomass_filtered:
+        print(f"[gemiz]   WARNING: {len(present)} candidates tagged as biomass "
+              f"but none have 'biomass' or 'growth' in ID. Skipping.")
+        return carved
+
+    print(f"[gemiz] Selecting biomass from {len(biomass_filtered)} candidates "
+          f"(filtered from {len(present)} tagged)...")
+
+    best_id: str | None = None
+
+    for rid in biomass_filtered:
+        rxn = carved.reactions.get_by_id(rid)
+        notes = rxn.notes or {}
+        source = notes.get("gemiz_biomass", "?")
+
+        with carved:
+            carved.objective = rid
+            sol = carved.optimize()
+            gr = sol.objective_value if sol.status == "optimal" else 0.0
+
+        # Reject biologically impossible growth (> 10 h^-1)
+        if gr > 10.0:
+            print(f"[gemiz]   Rejected: {rid} (from {source}) "
+                  f"growth={gr:.4f} h^-1 (biologically impossible)")
+            continue
+
+        if 0 < gr < 10.0:
+            best_id = rid
+            best_growth = gr
+            print(f"[gemiz]   Selected: {rid} (from {source}) "
+                  f"growth={gr:.4f} h^-1")
+            break
+
+        print(f"[gemiz]   Tried: {rid} (from {source}) growth={gr:.4f}")
+
+    if best_id is not None:
+        carved.objective = best_id
+    else:
+        print("[gemiz]   WARNING: No candidate biomass produced valid growth (0-10 h^-1).")
 
     return carved
 
@@ -154,16 +261,44 @@ def setup_milp(
         dtype=np.float64,
     )
 
-    # ---- biomass reaction (objective) ----
+    # ---- biomass reaction(s) ----
+    # Primary: reaction with non-zero objective coefficient
     biomass_idx = None
     for i, rxn in enumerate(model.reactions):
         if rxn.objective_coefficient != 0:
             biomass_idx = i
             break
 
+    # Collect candidate biomass reactions from notes (universal template)
+    # E. coli biomass first (most common, most likely to work)
+    biomass_candidates: list[int] = []
+    if biomass_idx is None:
+        ecoli_bio: list[int] = []
+        other_bio: list[int] = []
+        for i, rxn in enumerate(model.reactions):
+            notes = rxn.notes or {}
+            if "gemiz_biomass" in notes:
+                src = notes.get("gemiz_biomass", "")
+                if src.startswith("iML1515") or src.startswith("iJO1366"):
+                    ecoli_bio.append(i)
+                else:
+                    other_bio.append(i)
+        biomass_candidates = ecoli_bio + other_bio
+        if biomass_candidates:
+            biomass_idx = biomass_candidates[0]  # default for single-biomass path
+
+    # Last fallback: reaction with 'biomass' in the id
+    if biomass_idx is None:
+        for i, rxn in enumerate(model.reactions):
+            if "biomass" in rxn.id.lower():
+                biomass_idx = i
+                break
+
     if biomass_idx is not None:
+        n_cand = len(biomass_candidates)
+        extra = f" (+{n_cand - 1} candidates)" if n_cand > 1 else ""
         print(f"[gemiz]   Biomass reaction: {rxn_ids[biomass_idx]} "
-              f"(index {biomass_idx})")
+              f"(index {biomass_idx}){extra}")
     else:
         print("[gemiz]   WARNING: No biomass reaction found in objective")
 
@@ -173,6 +308,7 @@ def setup_milp(
         "ub": ub,
         "scores": scores,
         "biomass_idx": biomass_idx,
+        "biomass_candidates": biomass_candidates,
         "n_reactions": n,
         "n_metabolites": m,
         "rxn_ids": rxn_ids,
@@ -261,7 +397,9 @@ def solve_highs_milp(
             h.addRow(0.0, INF, 2, [i, n + i], [1.0, -float(lb[i])])
 
     # ── constraint 4: growth requirement ──────────────────────────────
-    if biomass_idx is not None:
+    enforce_biomass = milp_data.get("enforce_biomass", True)
+
+    if enforce_biomass and biomass_idx is not None:
         h.addRow(float(min_growth), INF, 1, [biomass_idx], [1.0])
 
     # ── solve ─────────────────────────────────────────────────────────

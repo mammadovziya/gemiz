@@ -26,6 +26,7 @@ def run_full_pipeline(
     use_esm: bool = False,
     threads: int = 4,
     sensitivity: float = 7.5,
+    media: str | None = None,
 ) -> dict:
     """Run the full GEM reconstruction pipeline.
 
@@ -58,6 +59,10 @@ def run_full_pipeline(
         CPU threads for MMseqs2.
     sensitivity
         MMseqs2 sensitivity (4.0=fast, 7.5=balanced, 9.5=sensitive).
+    media
+        Growth medium name (e.g. ``"M9"``, ``"LB"``).  When set, exchange
+        reactions are constrained to match the medium before final growth
+        verification.  Only used in universal mode.
 
     Returns
     -------
@@ -293,6 +298,23 @@ def run_full_pipeline(
         results["step55_time"] = elapsed55
 
     # ------------------------------------------------------------------
+    # Step 5.7: Apply media constraints (universal mode only)
+    # ------------------------------------------------------------------
+    if media is not None:
+        print(f"\n[5.7/6] Applying {media} media constraints...")
+        n_closed, n_opened = apply_media_constraints(carved, media)
+        _sol_media = carved.optimize()
+        _gr_media = (_sol_media.objective_value
+                     if _sol_media.status == "optimal" else 0.0)
+        print(f"      Closed {n_closed} exchange reactions, "
+              f"opened {n_opened} for {media}")
+        grow_mark = "\u2713" if _gr_media > 1e-6 else "\u2717"
+        print(f"      Growth rate ({media}): {_gr_media:.4f} h^-1  "
+              f"{grow_mark}")
+        results["media"] = media
+        results["growth_rate_media"] = _gr_media
+
+    # ------------------------------------------------------------------
     # Step 6: Save model
     # ------------------------------------------------------------------
     print("\n[6/6] Saving model...")
@@ -350,3 +372,72 @@ def _read_fasta_subset(
             seqs[current_id] = "".join(current_seq)
 
     return seqs
+
+
+# ---------------------------------------------------------------------------
+# Media constraints
+# ---------------------------------------------------------------------------
+
+_MEDIA_DB_PATH = Path("data/universal/media_db.tsv")
+
+
+def apply_media_constraints(
+    model: "cobra.Model",
+    medium: str,
+) -> tuple[int, int]:
+    """Constrain exchange reactions to match a growth medium.
+
+    Loads compound lists from ``data/universal/media_db.tsv`` (CarveMe format:
+    columns ``medium``, ``description``, ``compound``, ``name``).
+
+    Parameters
+    ----------
+    model
+        COBRApy model (modified in place).
+    medium
+        Medium name as it appears in media_db.tsv (e.g. ``"M9"``, ``"LB"``).
+
+    Returns
+    -------
+    (n_closed, n_opened)
+        Number of exchange reactions closed and opened.
+    """
+    import pandas as pd
+
+    if not _MEDIA_DB_PATH.exists():
+        print(f"[gemiz]   WARNING: {_MEDIA_DB_PATH} not found. "
+              f"Skipping media constraints.")
+        return 0, 0
+
+    media_db = pd.read_csv(_MEDIA_DB_PATH, sep="\t")
+    medium_rows = media_db[media_db["medium"] == medium]
+
+    if medium_rows.empty:
+        available = sorted(media_db["medium"].unique())
+        print(f"[gemiz]   WARNING: medium '{medium}' not found in media_db.tsv. "
+              f"Available: {available}")
+        return 0, 0
+
+    allowed_compounds = set(medium_rows["compound"].tolist())
+
+    # Build set of exchange reaction IDs to open
+    allowed_exchanges: set[str] = set()
+    for compound in allowed_compounds:
+        allowed_exchanges.add(f"EX_{compound}_e")
+
+    # Close all exchange reactions
+    model_rxn_ids = {r.id for r in model.reactions}
+    n_closed = 0
+    for rxn in model.reactions:
+        if rxn.id.startswith("EX_") and rxn.lower_bound < 0:
+            rxn.lower_bound = 0
+            n_closed += 1
+
+    # Open allowed exchanges
+    n_opened = 0
+    for ex_id in allowed_exchanges:
+        if ex_id in model_rxn_ids:
+            model.reactions.get_by_id(ex_id).lower_bound = -10.0
+            n_opened += 1
+
+    return n_closed, n_opened
