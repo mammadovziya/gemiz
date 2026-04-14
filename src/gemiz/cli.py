@@ -52,7 +52,12 @@ def main(ctx: click.Context, verbose: bool) -> None:
 # ---------------------------------------------------------------------------
 
 @main.command()
-@click.argument("genome", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("genome", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=False)
+@click.option(
+    "--refseq",
+    default=None,
+    help="NCBI RefSeq assembly accession (e.g. GCF_000005845.2) to download instead of a local genome.",
+)
 @click.option(
     "--output", "-o",
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
@@ -130,16 +135,19 @@ def main(ctx: click.Context, verbose: bool) -> None:
 )
 @click.option(
     "--media",
-    type=click.Choice(["M9", "LB", "M9[glyc]", "M9[-O2]", "LB[-O2]"], case_sensitive=True),
+    type=click.Choice(["M9", "LB", "M9[glyc]", "M9[-O2]", "LB[-O2]", "none"],
+                       case_sensitive=True),
     default="M9",
     show_default=True,
-    help="Growth medium for universal mode (constrains exchange reactions).",
+    help="Growth medium for universal mode (constrains exchange reactions). "
+         "Use 'none' to skip media constraints.",
 )
 @click.pass_context
 def carve(
     ctx: click.Context,
-    genome: Path,
+    genome: Path | None,
     output: Path | None,
+    refseq: str | None,
     organism: str | None,
     template: Path | None,
     reference: Path | None,
@@ -165,6 +173,12 @@ def carve(
       5. MILP carving        -- HiGHS
       6. Model export        -- SBML (.xml)
     """
+    # ---- validate genome vs refseq ----
+    if genome is None and refseq is None:
+        raise click.UsageError("Must provide either a local GENOME file or a --refseq accession.")
+    if genome is not None and refseq is not None:
+        raise click.UsageError("Cannot provide both a local GENOME file and a --refseq accession.")
+
     # ---- load organism config if specified ----
     org_config: dict = {}
     if organism is not None:
@@ -179,7 +193,10 @@ def carve(
 
     # ---- resolve defaults (CLI flags override organism config) ----
     if output is None:
-        output = genome.parent / f"{genome.stem}_model.xml"
+        if genome is not None:
+            output = genome.parent / f"{genome.stem}_model.xml"
+        else:
+            output = Path(f"{refseq}_model.xml")
 
     # Detect universal mode: no --organism and no explicit --template/--reference
     _univ_faa      = Path(_UNIVERSAL_FAA)
@@ -213,7 +230,14 @@ def carve(
             esm_db = _univ_mmseqs
     else:
         if template is None:
-            if "template" in org_config:
+            # Default: use the organism's gold standard as template
+            # (config["template"] is the gold standard path set by setup_organism.py;
+            #  config["cross_template"] is the leave-one-out cross-template set by
+            #  build_cross_templates.py — only used via explicit --template flag)
+            gold_std = Path(f"data/organisms/{organism}/gold_standard.xml") if organism else None
+            if gold_std and gold_std.exists():
+                template = gold_std
+            elif "template" in org_config:
                 template = Path(org_config["template"])
             else:
                 template = Path(_DEFAULT_MODEL)
@@ -242,6 +266,14 @@ def carve(
     if not reference.exists():
         console.print(f"[bold red]Error:[/] reference proteins not found: {reference}")
         sys.exit(1)
+
+    # ---- download genome if --refseq is used ----
+    if refseq is not None:
+        console.print(f"[bold]Downloading[/] assembly {refseq} from NCBI ...")
+        from gemiz.db.ncbi import download_assembly
+        dest_dir = output.parent
+        genome = download_assembly(refseq, dest_dir)
+        console.print(f"  Saved genome to: [green]{genome}[/]")
 
     # ---- header ----
     console.print()
@@ -274,7 +306,7 @@ def carve(
         use_esm=not no_esm,
         threads=threads,
         sensitivity=sensitivity,
-        media=media if _universal_mode else None,
+        media=media if (_universal_mode and media != "none") else None,
     )
 
     # ---- summary ----

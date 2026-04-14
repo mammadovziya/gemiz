@@ -214,17 +214,27 @@ def run_full_pipeline(
         results["step3_time"] = 0.0
 
     # ------------------------------------------------------------------
-    # Step 4: Reaction scoring
+    # Step 3.5: Load template & apply media constraints (universal mode)
     # ------------------------------------------------------------------
-    print("\n[4/6] Computing reaction scores...")
-    t0 = time.perf_counter()
-
     from gemiz.reconstruction.scoring import (
         compute_reaction_scores,
         load_universal_model,
     )
 
     universal = load_universal_model(universal_model_path)
+
+    if media is not None:
+        print(f"\n[3.5/6] Applying {media} media constraints to template...")
+        n_closed, n_opened = apply_media_constraints(universal, media)
+        print(f"      Closed {n_closed} exchange reactions, "
+              f"opened {n_opened} for {media}")
+        results["media"] = media
+
+    # ------------------------------------------------------------------
+    # Step 4: Reaction scoring
+    # ------------------------------------------------------------------
+    print("\n[4/6] Computing reaction scores...")
+    t0 = time.perf_counter()
 
     reaction_scores = compute_reaction_scores(
         universal,
@@ -296,23 +306,6 @@ def run_full_pipeline(
             print("      Gap-filling could not restore growth  \u2717")
         results["gapfill_added"] = len(_added)
         results["step55_time"] = elapsed55
-
-    # ------------------------------------------------------------------
-    # Step 5.7: Apply media constraints (universal mode only)
-    # ------------------------------------------------------------------
-    if media is not None:
-        print(f"\n[5.7/6] Applying {media} media constraints...")
-        n_closed, n_opened = apply_media_constraints(carved, media)
-        _sol_media = carved.optimize()
-        _gr_media = (_sol_media.objective_value
-                     if _sol_media.status == "optimal" else 0.0)
-        print(f"      Closed {n_closed} exchange reactions, "
-              f"opened {n_opened} for {media}")
-        grow_mark = "\u2713" if _gr_media > 1e-6 else "\u2717"
-        print(f"      Growth rate ({media}): {_gr_media:.4f} h^-1  "
-              f"{grow_mark}")
-        results["media"] = media
-        results["growth_rate_media"] = _gr_media
 
     # ------------------------------------------------------------------
     # Step 6: Save model

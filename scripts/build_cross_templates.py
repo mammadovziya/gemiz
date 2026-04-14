@@ -95,7 +95,7 @@ def update_config(org: str, template_path: Path) -> None:
         with open(config_path) as f:
             config = json.load(f)
 
-    config["template"] = str(template_path)
+    config["cross_template"] = str(template_path)
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     with open(config_path, "w") as f:

@@ -43,13 +43,16 @@ from typing import NamedTuple
 # ---------------------------------------------------------------------------
 
 _DISPLAY_NAMES: dict[str, str] = {
-    "ecoli":         "E. coli K-12",
-    "bsubtilis":     "B. subtilis 168",
-    "scerevisiae":   "S. cerevisiae",
-    "mtuberculosis": "M. tuberculosis",
-    "styphimurium":  "S. typhimurium",
-    "paeruginosa":   "P. aeruginosa",
-    "pputida":       "P. putida",
+    "ecoli":          "E. coli K-12",
+    "bsubtilis":      "B. subtilis 168",
+    "scerevisiae":    "S. cerevisiae",
+    "mtuberculosis":  "M. tuberculosis",
+    "styphimurium":   "S. typhimurium",
+    "paeruginosa":    "P. aeruginosa",
+    "pputida":        "P. putida",
+    "mgenitalium":    "M. genitalium",
+    "rsolanacearum":  "R. solanacearum",
+    "soneidensis":    "S. oneidensis",
 }
 
 _GOLD_OVERRIDES: dict[str, str] = {
@@ -83,13 +86,29 @@ class OrgResult(NamedTuple):
 # Core logic
 # ---------------------------------------------------------------------------
 
-def _model_paths(org: str, model_dir: str) -> tuple[Path, Path]:
-    model_path = Path(model_dir) / f"{org}_model.xml"
+def _model_paths(org: str, model_dir: str, suffix: str = "_model") -> tuple[Path, Path]:
+    model_path = Path(model_dir) / f"{org}{suffix}.xml"
     gold_path = Path(
         _GOLD_OVERRIDES[org] if org in _GOLD_OVERRIDES
         else f"data/organisms/{org}/gold_standard.xml"
     )
     return model_path, gold_path
+
+
+def _normalise_id(rxn_id: str) -> str:
+    """Strip SBML prefix from a reaction ID for cross-tool comparison.
+
+    CarveMe models use ``R_GAPD`` while BiGG gold standards use ``GAPD``.
+    """
+    if rxn_id.startswith("R_"):
+        return rxn_id[2:]
+    return rxn_id
+
+
+def _is_exchange(rxn_id: str) -> bool:
+    """Return True for exchange/demand/sink reactions (not real metabolism)."""
+    norm = _normalise_id(rxn_id)
+    return norm.startswith("EX_") or norm.startswith("DM_") or norm.startswith("SK_")
 
 
 def _compute_metrics(
@@ -106,12 +125,12 @@ def _compute_metrics(
     return tp, fp, fn, precision, recall, f1
 
 
-def run_organism(org: str, tool: str, model_dir: str) -> OrgResult:
+def run_organism(org: str, tool: str, model_dir: str, suffix: str = "_model") -> OrgResult:
     """Load models and compute all metrics for one organism."""
     import cobra
 
     display = _DISPLAY_NAMES.get(org, org)
-    model_path, gold_path = _model_paths(org, model_dir)
+    model_path, gold_path = _model_paths(org, model_dir, suffix)
 
     if not model_path.exists():
         raise FileNotFoundError(f"{tool} model not found: {model_path}")
@@ -127,8 +146,11 @@ def run_organism(org: str, tool: str, model_dir: str) -> OrgResult:
     sol = model.optimize()
     growth_rate = sol.objective_value if sol.status == "optimal" else 0.0
 
-    model_ids = {r.id for r in model.reactions}
-    gold_ids  = {r.id for r in gold.reactions}
+    # Normalise IDs and exclude exchange reactions for fair comparison
+    model_ids = {_normalise_id(r.id) for r in model.reactions
+                 if not _is_exchange(r.id)}
+    gold_ids  = {_normalise_id(r.id) for r in gold.reactions
+                 if not _is_exchange(r.id)}
     tp, fp, fn, precision, recall, f1 = _compute_metrics(model_ids, gold_ids)
 
     warning = None
@@ -156,7 +178,7 @@ def run_organism(org: str, tool: str, model_dir: str) -> OrgResult:
 
 _FMT    = " {:<20} {:>9}  {:>7}  {:>6}  {:>7}  {:>9}"
 _HEADER = _FMT.format("Organism", "Precision", "Recall", "F1", "Growth", "Reactions")
-_SEP    = "\u2550" * len(_HEADER)
+_SEP    = "=" * len(_HEADER)
 
 
 def print_table(results: list[OrgResult], tool: str) -> None:
@@ -271,6 +293,12 @@ def main() -> None:
         default="data/benchmark_results.json",
         help="Path to write JSON results (default: data/benchmark_results.json).",
     )
+    parser.add_argument(
+        "--model-suffix",
+        default="_model",
+        help="Filename suffix before .xml (default: _model). "
+             "E.g. --model-suffix _noesm_model loads {org}_noesm_model.xml.",
+    )
     args = parser.parse_args()
 
     results: list[OrgResult] = []
@@ -279,7 +307,8 @@ def main() -> None:
     for org in args.organisms:
         print(f"\n[{org}]")
         try:
-            result = run_organism(org, tool=args.tool, model_dir=args.model_dir)
+            result = run_organism(org, tool=args.tool, model_dir=args.model_dir,
+                                  suffix=args.model_suffix)
             results.append(result)
         except FileNotFoundError as exc:
             print(f"  SKIP: {exc}")
