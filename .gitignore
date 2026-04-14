@@ -20,26 +20,74 @@ gemiz-env-linux/
 venv/
 .venv/
 env/
+.claude/
 
-# Data / large files
-data/genomes/*.fna
-data/genomes/*.fna.gz
-data/models/*.xml
+# MMseqs2 binaries (large, downloaded at runtime)
+src/gemiz/bin/mmseqs/
+
+# -----------------------------------------------------------------------
+# Data — downloaded/generated, not committed
+# -----------------------------------------------------------------------
+
+# Genome inputs
+data/genomes/
+data/*.fna
+data/*.fna.gz
+
+# Reference databases
 data/databases/
-*.dmnd          # DIAMOND databases
-*.h5            # embedding stores
-*.faiss         # FAISS indexes
+data/reference/*.faa
+data/reference/*.xml
+data/reference/*.xml.gz
 
-# IDE
+# Universal template models and BiGG universe
+data/universal/*.xml
+data/universal/*.xml.gz
+
+# Universal database (built by scripts/build_universal_db.py)
+data/universal/db/
+
+# Gold standard and comparison models
+data/organisms/
+data/comparison/
+
+# Pipeline work directories
+data/.gemiz_*/
+
+# Benchmark outputs
+data/benchmark_results.json
+
+# Embeddings / indexes
+*.npz
+*.faiss
+*.h5
+
+# MMseqs2 index shards
+*.dbtype
+*.index
+*.lookup
+*.source
+*.hdmp
+*.idx
+*.dmp
+
+# DIAMOND databases
+*.dmnd
+
+# -----------------------------------------------------------------------
+# IDE / OS
+# -----------------------------------------------------------------------
 .vscode/settings.json
 .idea/
 *.swp
 *.swo
-
-# OS
 .DS_Store
 Thumbs.db
 
 # Secrets / config
 .env
 *.pem
+
+# Scratch notes
+methods.txt
+data/.gemiz_*/
