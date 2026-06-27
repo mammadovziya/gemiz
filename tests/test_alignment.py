@@ -96,7 +96,7 @@ def test_align_proteins(tmp_path):
 
     elapsed = time.perf_counter() - t0
 
-    lines = [l for l in Path(tsv).read_text().splitlines() if l.strip()]
+    lines = [line for line in Path(tsv).read_text().splitlines() if line.strip()]
     print(f"\n  Result TSV   : {tsv}")
     print(f"  Total hits   : {len(lines):,}")
     print(f"  Time taken   : {elapsed:.1f}s")

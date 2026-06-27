@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use Gemiz, please cite the repository."
+title: "Gemiz: bacterial genome-scale metabolic model reconstruction from FASTA"
+version: "0.1.0"
+date-released: "2026-07-11"
+repository-code: "https://github.com/mammadovziya/gemiz"
+license: MIT
+authors:
+  - name: "gemiz contributors"
+

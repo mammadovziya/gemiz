@@ -58,7 +58,7 @@ def ensure_genes(genome_fna: str) -> str:
 
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     faa_path = call_genes(genome_fna, str(WORK_DIR / "genes"))
-    n = sum(1 for l in open(faa_path) if l.startswith(">"))
+    n = sum(1 for line in open(faa_path) if line.startswith(">"))
     print(f"  Genes: {n:,} proteins ({faa_path})")
     return faa_path
 
@@ -171,7 +171,6 @@ def _degrade_hits(
 
 def _random_esmc_hits(masked_ids: list[str], seed: int) -> dict:
     """Return fake ESM C hits with random similarity scores."""
-    rng = random.Random(seed + 1000)
     # We can't return actual ref_ids without knowing the mapping,
     # so we assign scores via protein_scores instead (handled in scoring path).
     # Return empty — caller injects random scores directly.
@@ -236,7 +235,6 @@ def _score_reactions(
         evaluate_gpr_rule,
         extract_gpr_associations,
         merge_protein_scores,
-        NO_EVIDENCE_SCORE,
     )
 
     gpr_assoc = extract_gpr_associations(model)

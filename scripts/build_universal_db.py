@@ -31,8 +31,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import requests
+
+if TYPE_CHECKING:
+    import cobra
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -240,7 +244,7 @@ def _download_ncbi_file(accession: str, dest: Path, suffix: str, out_name: str) 
     out_path = dest / out_name
 
     _download_file(f"{asm_url}/{gz_name}", gz_path)
-    print(f"      Decompressing ...", end=" ", flush=True)
+    print("      Decompressing ...", end=" ", flush=True)
     with gzip.open(gz_path, "rb") as fin, open(out_path, "wb") as fout:
         shutil.copyfileobj(fin, fout)
     gz_path.unlink()
@@ -489,10 +493,10 @@ def process_model(
     # ---- BiGG model ----
     model_path = org_dir / "model.xml"
     if not model_path.exists() or force:
-        print(f"      Downloading BiGG model ...", flush=True)
+        print("      Downloading BiGG model ...", flush=True)
         _download_bigg_model(bigg_id, org_dir)
     else:
-        print(f"      Model cached")
+        print("      Model cached")
 
     model = cobra.io.read_sbml_model(str(model_path))
     n_rxns = len(model.reactions)
@@ -505,18 +509,18 @@ def process_model(
         print(f"      Downloading proteins ({gcf_acc}) ...", flush=True)
         _download_ncbi_file(gcf_acc, org_dir, "protein.faa", "proteins.faa")
     else:
-        print(f"      Proteins cached")
+        print("      Proteins cached")
 
-    n_prot = sum(1 for l in open(faa_path) if l.startswith(">"))
+    n_prot = sum(1 for line in open(faa_path) if line.startswith(">"))
     print(f"      {n_prot:,} proteins")
 
     # ---- Feature table ----
     ft_path = org_dir / "feature_table.txt"
     if not ft_path.exists() or force:
-        print(f"      Downloading feature table ...", flush=True)
+        print("      Downloading feature table ...", flush=True)
         _download_ncbi_file(gcf_acc, org_dir, "feature_table.txt", "feature_table.txt")
     else:
-        print(f"      Feature table cached")
+        print("      Feature table cached")
 
     # ---- Build locus_tag -> sequence map ----
     ft_rows = _parse_feature_table_full(ft_path)
@@ -708,15 +712,15 @@ def build_mmseqs_db(faa_path: Path) -> None:
         mmseqs = "mmseqs"
 
     cmd = [mmseqs, "createdb", str(faa_path), db_prefix]
-    print(f"\nBuilding MMseqs2 DB ...")
+    print("\nBuilding MMseqs2 DB ...")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"  ERROR: mmseqs createdb failed")
+        print("  ERROR: mmseqs createdb failed")
         for line in (result.stderr or "").splitlines()[:10]:
             print(f"    {line}")
         raise RuntimeError("MMseqs2 DB build failed")
 
-    n = sum(1 for l in open(faa_path) if l.startswith(">"))
+    n = sum(1 for line in open(faa_path) if line.startswith(">"))
     print(f"  MMseqs2 DB ready: {n:,} sequences  ->  {db_prefix}")
 
 
@@ -869,7 +873,7 @@ def main() -> None:
 
     # ---- Step 7: Universal template SBML ----
     if model_results:
-        print(f"\nBuilding universal template SBML ...")
+        print("\nBuilding universal template SBML ...")
         template = build_template(model_results)
         import cobra
         cobra.io.write_sbml_model(template, str(XML_OUT))
@@ -893,11 +897,11 @@ def main() -> None:
         print("\nSkipping MMseqs2 DB (--skip-mmseqs).")
 
     # ---- Summary ----
-    total_proteins = sum(1 for l in open(FAA_OUT) if l.startswith(">")) if FAA_OUT.exists() else 0
+    total_proteins = sum(1 for line in open(FAA_OUT) if line.startswith(">")) if FAA_OUT.exists() else 0
     total_rxns = len(template.reactions) if model_results else 0
 
     print(f"\n{'='*50}")
-    print(f"  === Build complete ===")
+    print("  === Build complete ===")
     print(f"  Models processed:  {n_ok:>4}/{len(candidates)}")
     print(f"  Models failed:     {n_fail:>4}/{len(candidates)}")
     print(f"  Total proteins:    {total_proteins:>8,}")

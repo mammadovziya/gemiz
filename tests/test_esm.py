@@ -53,7 +53,7 @@ if _skip_reason is not None:
     pytest.skip(_skip_reason, allow_module_level=True)
 
 # --- imports that depend on the above guard ---
-from gemiz.embedding.esm import (
+from gemiz.embedding.esm import (  # noqa: E402
     EMBEDDING_DIM,
     embed_proteins,
     embed_sequence,
@@ -61,8 +61,7 @@ from gemiz.embedding.esm import (
     load_embeddings,
     load_model,
 )
-from gemiz.embedding.database import (
-    build_faiss_index,
+from gemiz.embedding.database import (  # noqa: E402
     generate_reference_db,
     search_similar,
 )
@@ -102,7 +101,7 @@ def test_check_available():
     """ESM C 600M dependencies must be importable."""
     import esm  # noqa: F401
     import faiss  # noqa: F401
-    print(f"\n  ESM C 600M available")
+    print("\n  ESM C 600M available")
     print(f"  torch : {torch.__version__}")
     print(f"  CUDA  : {torch.cuda.is_available()}")
     if torch.cuda.is_available():
@@ -333,7 +332,7 @@ def test_search_similar_full_pipeline(tmp_path):
     matched   = sum(1 for h in results.values() if h)
     unmatched = sum(1 for h in results.values() if not h)
 
-    print(f"\n  --- ESM C Search Summary ---")
+    print("\n  --- ESM C Search Summary ---")
     print(f"  Searched:               {len(lc_ids)} proteins")
     print(f"  Found match (>=0.70):   {matched} ({100 * matched / len(lc_ids):.1f}%)")
     print(f"  No match found:         {unmatched} ({100 * unmatched / len(lc_ids):.1f}%)")
@@ -342,7 +341,7 @@ def test_search_similar_full_pipeline(tmp_path):
 
     # Print top 3 results for first 5 matched proteins
     shown = 0
-    print(f"\n  --- Sample Matches ---")
+    print("\n  --- Sample Matches ---")
     for qid, hits in results.items():
         if hits and shown < 5:
             print(f"  {qid}:")

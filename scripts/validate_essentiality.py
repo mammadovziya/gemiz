@@ -19,6 +19,10 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import cobra
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +304,7 @@ def print_report(result: dict) -> None:
         print(f"  MCC:        {cmp['mcc']:.3f}  (Matthews correlation coefficient)")
     else:
         print(f"\n  No reference data available for organism '{result['organism']}'.")
-        print(f"  (Add reference essential genes to _REFERENCE_DATA in this script.)")
+        print("  (Add reference essential genes to _REFERENCE_DATA in this script.)")
 
     print(thick)
 

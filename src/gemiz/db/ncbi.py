@@ -61,7 +61,6 @@ def download_assembly(accession: str, dest: Path) -> Path:
     r = requests.get(url, stream=True, timeout=60)
     r.raise_for_status()
     
-    total = int(r.headers.get("content-length", 0))
     downloaded = 0
     
     with open(gz_path, "wb") as f:

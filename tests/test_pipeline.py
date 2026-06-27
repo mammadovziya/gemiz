@@ -64,7 +64,7 @@ def test_full_pipeline():
     assert sol.objective_value > 0.01, f"Growth too low: {sol.objective_value}"
 
     # ---- print full summary ----
-    print(f"\n  Full pipeline complete")
+    print("\n  Full pipeline complete")
     print(f"  Reactions:   {len(model.reactions)}")
     print(f"  Metabolites: {len(model.metabolites)}")
     print(f"  Genes:       {len(model.genes)}")
@@ -73,7 +73,7 @@ def test_full_pipeline():
     print(f"  Output:      {OUTPUT}")
 
     # ---- timing breakdown ----
-    print(f"\n  Timing breakdown:")
+    print("\n  Timing breakdown:")
     for i in range(1, 7):
         key = f"step{i}_time"
         if key in result:

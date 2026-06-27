@@ -55,7 +55,7 @@ def _embed_esmc(sequences: list[str], *, verbose: bool) -> np.ndarray:
     """Run ESM C 600M inference; returns (N, 1152) float32."""
     import torch
     from esm.models.esmc import ESMC  # type: ignore[import-untyped]
-    from esm.sdk.api import ESMProtein, LogitsConfig  # type: ignore[import-untyped]
+    from esm.sdk.api import ESMProtein  # type: ignore[import-untyped]
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if verbose:

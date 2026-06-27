@@ -35,6 +35,22 @@ if TYPE_CHECKING:
     import cobra
 
 INF = 1e30
+SMALL_GAPFILL_COPY_LIMIT = 25
+
+
+def model_growth_rate(model: "cobra.Model") -> float:
+    """Return the objective value using COBRApy's fast scalar optimizer."""
+    try:
+        value = model.slim_optimize(error_value=0.0)
+    except Exception:
+        return 0.0
+    if value is None or not np.isfinite(value):
+        return 0.0
+    return float(value)
+
+
+def _model_grows(model: "cobra.Model", threshold: float = 1e-6) -> bool:
+    return model_growth_rate(model) > threshold
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +229,7 @@ def _select_biomass(
 
         with carved:
             carved.objective = rid
-            sol = carved.optimize()
-            gr = sol.objective_value if sol.status == "optimal" else 0.0
+            gr = model_growth_rate(carved)
 
         # Reject biologically impossible growth (> 10 h^-1)
         if gr > 10.0:
@@ -509,8 +524,7 @@ def gapfill_model(
     -------
     (filled_model, added_reaction_ids)
     """
-    sol = carved_model.optimize()
-    if sol.status == "optimal" and sol.objective_value > 1e-6:
+    if _model_grows(carved_model):
         return carved_model.copy(), []
 
     carved_ids = {r.id for r in carved_model.reactions}
@@ -554,11 +568,18 @@ def gapfill_model(
     else:
         print(f"[gemiz]   MILP gapfill found {len(added_ids)} reactions to add.")
 
-    # Build the filled model from one full model copy. Copying individual
-    # COBRApy reactions can recurse through attached model/gene/metabolite
-    # graphs for large templates.
-    filled_ids = carved_ids | set(added_ids)
-    filled = _subset_template_model(template_model, filled_ids, carved_model)
+    if len(added_ids) <= SMALL_GAPFILL_COPY_LIMIT:
+        try:
+            filled = _augment_model_with_added_reactions(
+                carved_model, template_model, added_ids
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[gemiz]   Fast gapfill model build failed: {exc}")
+            filled_ids = carved_ids | set(added_ids)
+            filled = _subset_template_model(template_model, filled_ids, carved_model)
+    else:
+        filled_ids = carved_ids | set(added_ids)
+        filled = _subset_template_model(template_model, filled_ids, carved_model)
 
     return filled, added_ids
 
@@ -598,18 +619,61 @@ def _try_cobra_gapfill(
 def _gapfill_candidate_key(
     reaction: "cobra.Reaction",
     reaction_scores: "dict[str, float]",
+    objective_metabolites: "set[str] | None" = None,
 ) -> tuple[int, float, str]:
     """Sort likely one-reaction gapfill fixes before broad internals."""
     rid = reaction.id.lower()
-    if rid.startswith(("sink_", "dm_", "sk_")):
+    is_objective_precursor = bool(
+        objective_metabolites
+        and rid.startswith(("sink_", "dm_", "sk_"))
+        and any(met.id in objective_metabolites for met in reaction.metabolites)
+    )
+    if is_objective_precursor:
         group = 0
-    elif rid.startswith("ex_"):
+    elif rid.startswith(("sink_", "dm_", "sk_")):
         group = 1
-    elif rid.endswith(("tex", "texi", "tpp")) or "transport" in reaction.name.lower():
+    elif rid.startswith("ex_"):
         group = 2
-    else:
+    elif rid.endswith(("tex", "texi", "tpp")) or "transport" in reaction.name.lower():
         group = 3
+    else:
+        group = 4
     return (group, -reaction_scores.get(reaction.id, 0.0), reaction.id)
+
+
+def _objective_metabolite_ids(model: "cobra.Model") -> set[str]:
+    """Return metabolites touched by the current objective reaction(s)."""
+    metabolites: set[str] = set()
+    for rxn in model.reactions:
+        if rxn.objective_coefficient != 0:
+            metabolites.update(met.id for met in rxn.metabolites)
+    return metabolites
+
+
+def _try_single_reaction_gapfill(
+    carved_model: "cobra.Model",
+    candidates: "list[cobra.Reaction]",
+    reaction_scores: "dict[str, float]",
+    max_candidates: int = 300,
+) -> "list[str]":
+    """Find a one-reaction gapfill fix without copying the full template."""
+    objective_metabolites = _objective_metabolite_ids(carved_model)
+    ranked = sorted(
+        candidates,
+        key=lambda reaction: _gapfill_candidate_key(
+            reaction, reaction_scores, objective_metabolites
+        ),
+    )
+
+    test_model = carved_model.copy()
+    for rxn in ranked[:max_candidates]:
+        with test_model:
+            _add_template_reaction(test_model, rxn)
+            if _model_grows(test_model):
+                print(f"[gemiz]   Single-reaction gapfill: {rxn.id}")
+                return [rxn.id]
+
+    return []
 
 
 def _fast_forward_gapfill(
@@ -621,9 +685,18 @@ def _fast_forward_gapfill(
 ) -> "list[str]":
     """Try prioritized small candidate sets before the full greedy fallback."""
     carved_ids = {r.id for r in carved_model.reactions}
+    single = _try_single_reaction_gapfill(
+        carved_model, candidates, reaction_scores, max_candidates=max_candidates
+    )
+    if single:
+        return single
+
+    objective_metabolites = _objective_metabolite_ids(carved_model)
     ranked = sorted(
         candidates,
-        key=lambda reaction: _gapfill_candidate_key(reaction, reaction_scores),
+        key=lambda reaction: _gapfill_candidate_key(
+            reaction, reaction_scores, objective_metabolites
+        ),
     )
 
     tried_sets: set[frozenset[str]] = set()
@@ -631,7 +704,9 @@ def _fast_forward_gapfill(
     for max_group in (0, 1, 2):
         group = [
             rxn for rxn in ranked
-            if _gapfill_candidate_key(rxn, reaction_scores)[0] <= max_group
+            if _gapfill_candidate_key(
+                rxn, reaction_scores, objective_metabolites
+            )[0] <= max_group
         ]
         if group:
             candidate_sets.append(group[:max_candidates])
@@ -649,9 +724,7 @@ def _fast_forward_gapfill(
             carved_model,
         )
 
-        sol = test_model.optimize()
-        grows = sol.status == "optimal" and sol.objective_value > 1e-6
-        if grows:
+        if _model_grows(test_model):
             for rxn in selected:
                 try:
                     test_rxn = test_model.reactions.get_by_id(rxn.id)
@@ -659,11 +732,7 @@ def _fast_forward_gapfill(
                     continue
                 with test_model:
                     test_model.remove_reactions([test_rxn], remove_orphans=False)
-                    sol = test_model.optimize()
-                    still_grows = (
-                        sol.status == "optimal"
-                        and sol.objective_value > 1e-6
-                    )
+                    still_grows = _model_grows(test_model)
                 if still_grows:
                     test_model.remove_reactions(
                         [test_model.reactions.get_by_id(rxn.id)],
@@ -704,8 +773,7 @@ def _greedy_gapfill(
         print(f"[gemiz]   Greedy gapfill setup failed: {exc}")
         return []
 
-    sol = test_model.optimize()
-    if sol.status != "optimal" or sol.objective_value <= 1e-6:
+    if not _model_grows(test_model):
         print("[gemiz]   WARNING: model cannot grow even with full template. "
               "Gap-filling cannot help.")
         return []
@@ -726,9 +794,7 @@ def _greedy_gapfill(
         # Temporarily remove and test
         with test_model:
             test_model.remove_reactions([test_rxn], remove_orphans=False)
-            sol = test_model.optimize()
-            still_grows = (sol.status == "optimal"
-                           and sol.objective_value > 1e-6)
+            still_grows = _model_grows(test_model)
 
         if still_grows:
             # Dispensable — permanently remove it
@@ -740,6 +806,71 @@ def _greedy_gapfill(
     # Whatever remains (beyond the original carved reactions) is the minimal set
     carved_ids = {r.id for r in carved_model.reactions}
     return [r.id for r in test_model.reactions if r.id not in carved_ids]
+
+
+def _clone_metabolite_for_model(
+    metabolite: "cobra.Metabolite",
+    model: "cobra.Model",
+) -> "cobra.Metabolite":
+    """Return the model-local metabolite with matching metadata."""
+    try:
+        return model.metabolites.get_by_id(metabolite.id)
+    except KeyError:
+        pass
+
+    import cobra
+
+    cloned = cobra.Metabolite(
+        metabolite.id,
+        formula=metabolite.formula,
+        name=metabolite.name,
+        charge=metabolite.charge,
+        compartment=metabolite.compartment,
+    )
+    cloned.annotation = dict(metabolite.annotation or {})
+    cloned.notes = dict(metabolite.notes or {})
+    return cloned
+
+
+def _add_template_reaction(
+    model: "cobra.Model",
+    template_reaction: "cobra.Reaction",
+) -> None:
+    """Add one template reaction without deep-copying the template model."""
+    import cobra
+
+    try:
+        model.reactions.get_by_id(template_reaction.id)
+        return
+    except KeyError:
+        pass
+
+    reaction = cobra.Reaction(template_reaction.id)
+    reaction.name = template_reaction.name
+    reaction.lower_bound = template_reaction.lower_bound
+    reaction.upper_bound = template_reaction.upper_bound
+    reaction.subsystem = template_reaction.subsystem
+    reaction.annotation = dict(template_reaction.annotation or {})
+    reaction.notes = dict(template_reaction.notes or {})
+    reaction.gene_reaction_rule = template_reaction.gene_reaction_rule
+
+    reaction.add_metabolites({
+        _clone_metabolite_for_model(met, model): coeff
+        for met, coeff in template_reaction.metabolites.items()
+    })
+    model.add_reactions([reaction])
+
+
+def _augment_model_with_added_reactions(
+    carved_model: "cobra.Model",
+    template_model: "cobra.Model",
+    added_ids: "list[str]",
+) -> "cobra.Model":
+    """Copy the carved model and add a small number of template reactions."""
+    filled = carved_model.copy()
+    for rid in added_ids:
+        _add_template_reaction(filled, template_model.reactions.get_by_id(rid))
+    return filled
 
 
 def _subset_template_model(
@@ -805,17 +936,10 @@ def verify_model(model: "cobra.Model") -> dict:
         warnings.append("No biomass reaction in objective")
 
     # FBA
-    can_grow = False
-    growth_rate = 0.0
-    try:
-        sol = model.optimize()
-        if sol.status == "optimal":
-            growth_rate = sol.objective_value
-            can_grow = growth_rate > 1e-6
-        else:
-            warnings.append(f"FBA status: {sol.status}")
-    except Exception as e:
-        warnings.append(f"FBA failed: {e}")
+    growth_rate = model_growth_rate(model)
+    can_grow = growth_rate > 1e-6
+    if not can_grow:
+        warnings.append("FBA objective is zero or infeasible")
 
     # orphan metabolites
     orphans = sum(1 for met in model.metabolites if len(met.reactions) == 0)

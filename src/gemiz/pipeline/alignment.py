@@ -67,7 +67,7 @@ def align_proteins(
     result_tsv = out_dir / "results.tsv"
 
     # Count query proteins for the progress line
-    n_query = sum(1 for l in query.open() if l.startswith(">"))
+    n_query = sum(1 for line in query.open() if line.startswith(">"))
     print(f"[gemiz] Aligning {n_query:,} proteins (MMseqs2, sensitivity={sensitivity})...")
 
     t0 = time.perf_counter()

@@ -19,6 +19,7 @@ Thresholds based on Rost (1999) "twilight zone of sequence alignment":
 from __future__ import annotations
 
 import csv
+import pickle
 import re
 from pathlib import Path
 
@@ -80,7 +81,31 @@ def load_universal_model(model_path: str) -> cobra.Model:
     Works with any COBRApy-readable SBML (.xml) file.
     """
     print("[gemiz] Loading universal model...")
-    model = cobra.io.read_sbml_model(model_path)
+    path = Path(model_path)
+    cache_path = path.with_suffix(path.suffix + ".gemiz.pkl")
+
+    if cache_path.exists() and cache_path.stat().st_mtime >= path.stat().st_mtime:
+        try:
+            with cache_path.open("rb") as f:
+                model = pickle.load(f)
+            print(f"[gemiz] Loaded cached template: {cache_path}")
+            print(
+                f"[gemiz] Universal model: {len(model.reactions)} reactions, "
+                f"{len(model.metabolites)} metabolites, "
+                f"{len(model.genes)} genes"
+            )
+            return model
+        except Exception as exc:  # noqa: BLE001
+            print(f"[gemiz] Template cache ignored: {exc}")
+
+    model = cobra.io.read_sbml_model(str(path))
+    try:
+        with cache_path.open("wb") as f:
+            pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"[gemiz] Cached template: {cache_path}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[gemiz] Template cache not written: {exc}")
+
     print(
         f"[gemiz] Universal model: {len(model.reactions)} reactions, "
         f"{len(model.metabolites)} metabolites, "

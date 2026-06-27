@@ -1,12 +1,12 @@
 # Gemiz
 
-Alpha Python toolkit for bacterial genome-scale metabolic model reconstruction from raw genome FASTA files.
+Gemiz is an alpha Python toolkit for FASTA-to-SBML bacterial genome-scale metabolic model (GEM) reconstruction.
 
 ```text
 genome.fna -> pyrodigal -> MMseqs2 -> reaction scoring -> COBRApy/HiGHS -> SBML
 ```
 
-Gemiz outputs a draft SBML model plus evidence/quality artifacts for inspection and benchmarking.
+Gemiz outputs a draft SBML model plus evidence and quality artifacts for inspection and benchmarking.
 
 ## Status
 

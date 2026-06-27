@@ -17,7 +17,6 @@ import pytest
 from gemiz.reconstruction.scoring import (
     HIGH_CONF_THRESHOLD,
     LOW_CONF_THRESHOLD,
-    NO_EVIDENCE_SCORE,
     build_protein_score_map,
     compute_reaction_scores,
     diagnose_id_mapping,
@@ -101,7 +100,7 @@ def test_extract_gpr_associations(iml1515):
         print(f"  {t:10s}: {types.get(t, 0):>5}")
 
     # Show examples
-    print(f"\n  Examples:")
+    print("\n  Examples:")
     for rxn_id, a in list(assoc.items())[:5]:
         print(f"    {rxn_id}: [{a['type']}] {a['rule'][:60]}")
 
@@ -235,14 +234,14 @@ def test_compute_reaction_scores(iml1515, tmp_path):
 
     # Top 10 highest
     sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    print(f"\n  Top 10 highest scoring reactions:")
+    print("\n  Top 10 highest scoring reactions:")
     for rxn_id, s in sorted_scores[:10]:
         rxn = iml1515.reactions.get_by_id(rxn_id)
         print(f"    {rxn_id:20s}  {s:+.4f}  ({rxn.name[:40]})")
 
     # 5 penalised
     penalised = [(r, s) for r, s in sorted_scores if s < 0]
-    print(f"\n  5 penalised reactions:")
+    print("\n  5 penalised reactions:")
     for rxn_id, s in penalised[:5]:
         rxn = iml1515.reactions.get_by_id(rxn_id)
         print(f"    {rxn_id:20s}  {s:+.4f}  ({rxn.name[:40]})")

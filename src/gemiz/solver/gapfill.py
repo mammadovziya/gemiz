@@ -12,7 +12,6 @@ HiGHS is configured as COBRApy's default solver in this module.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 import numpy as np

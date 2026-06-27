@@ -22,6 +22,10 @@ venv/
 env/
 .claude/
 
+# Local competitor checkouts used for benchmarking only
+/carveme/
+/gapseq/
+
 # MMseqs2 binaries (large, downloaded at runtime)
 src/gemiz/bin/mmseqs/
 
@@ -43,6 +47,8 @@ data/reference/*.xml.gz
 # Universal template models and BiGG universe
 data/universal/*.xml
 data/universal/*.xml.gz
+data/universal/*.gemiz.pkl
+data/universal/**/*.gemiz.pkl
 
 # Universal database (built by scripts/build_universal_db.py)
 data/universal/db/

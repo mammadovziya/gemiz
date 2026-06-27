@@ -278,7 +278,7 @@ def run_full_pipeline(
     t0 = time.perf_counter()
 
     from gemiz.reconstruction.carving import (
-        carve_model, gapfill_model, verify_model,
+        carve_model, gapfill_model, model_growth_rate, verify_model,
     )
 
     carved = carve_model(universal, reaction_scores, min_growth=min_growth)
@@ -295,12 +295,12 @@ def run_full_pipeline(
     t0 = time.perf_counter()
     gapfill_added_ids: list[str] = []
 
-    _sol = carved.optimize()
-    _can_grow = _sol.status == "optimal" and _sol.objective_value > 1e-6
+    _growth = model_growth_rate(carved)
+    _can_grow = _growth > 1e-6
 
     if _can_grow:
         print(f"      Model grows without gap-filling  "
-              f"(growth: {_sol.objective_value:.4f} h^-1) \u2713")
+              f"(growth: {_growth:.4f} h^-1) \u2713")
         results["gapfill_added"] = 0
         results["step55_time"] = 0.0
     else:
@@ -310,8 +310,7 @@ def run_full_pipeline(
         gapfill_added_ids = list(_added)
         elapsed55 = time.perf_counter() - t0
         if _added:
-            _sol2 = carved.optimize()
-            _gr2 = _sol2.objective_value if _sol2.status == "optimal" else 0.0
+            _gr2 = model_growth_rate(carved)
             print(f"      Added {len(_added)} reactions to restore growth")
             grow_mark = "\u2713" if _gr2 > 1e-6 else "\u2717"
             print(f"      Growth rate after gap-filling: "

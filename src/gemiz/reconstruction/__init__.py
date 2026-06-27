@@ -4,3 +4,10 @@ from .scoring import (
     merge_protein_scores,
     parse_reference_id_map,
 )
+
+__all__ = [
+    "compute_reaction_scores",
+    "diagnose_id_mapping",
+    "merge_protein_scores",
+    "parse_reference_id_map",
+]

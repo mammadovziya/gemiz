@@ -56,9 +56,9 @@ def tune_thresholds(
     best: dict = {"f1": 0, "high_conf": 50, "low_conf": 30}
 
     n_combos = sum(
-        1 for h, l in itertools.product(high_conf_values, low_conf_values) if l < h
+        1 for high, low in itertools.product(high_conf_values, low_conf_values) if low < high
     )
-    print(f"Tuning thresholds on E. coli validation set...")
+    print("Tuning thresholds on E. coli validation set...")
     print(f"Testing {n_combos} combinations\n")
 
     for high_conf, low_conf in itertools.product(high_conf_values, low_conf_values):

@@ -25,6 +25,10 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import cobra
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +64,6 @@ def merge_models(models: "list[cobra.Model]", target_org: str) -> "cobra.Model":
     (stoichiometry, bounds, GPR).  Reactions from subsequent models are
     appended only when their ID is not already present.
     """
-    import cobra
 
     base = models[0].copy()
     base.id = f"cross_template_{target_org}"
