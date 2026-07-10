@@ -25,3 +25,4 @@ def test_carve_help():
     assert result.exit_code == 0
     assert "pyrodigal" in result.output
     assert "--output" in result.output
+    assert "--evidence-output" in result.output

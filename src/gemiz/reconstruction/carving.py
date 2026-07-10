@@ -511,22 +511,21 @@ def gapfill_model(
     if added_ids is None:
         print("[gemiz]   MILP gapfill timed out — switching to greedy heuristic...")
         added_ids = _greedy_gapfill(
-            carved_model, candidates, reaction_scores or {}
+            carved_model, template_model, candidates, reaction_scores or {}
         )
     elif not added_ids:
         print("[gemiz]   MILP gapfill found no solution — switching to greedy heuristic...")
         added_ids = _greedy_gapfill(
-            carved_model, candidates, reaction_scores or {}
+            carved_model, template_model, candidates, reaction_scores or {}
         )
     else:
         print(f"[gemiz]   MILP gapfill found {len(added_ids)} reactions to add.")
 
-    # Build the filled model
-    filled = carved_model.copy()
-    rxn_by_id = {r.id: r for r in template_model.reactions}
-    to_add = [rxn_by_id[rid].copy() for rid in added_ids if rid in rxn_by_id]
-    if to_add:
-        filled.add_reactions(to_add)
+    # Build the filled model from one full model copy. Copying individual
+    # COBRApy reactions can recurse through attached model/gene/metabolite
+    # graphs for large templates.
+    filled_ids = carved_ids | set(added_ids)
+    filled = _subset_template_model(template_model, filled_ids, carved_model)
 
     return filled, added_ids
 
@@ -565,19 +564,26 @@ def _try_cobra_gapfill(
 
 def _greedy_gapfill(
     carved_model: "cobra.Model",
+    template_model: "cobra.Model",
     candidates: "list[cobra.Reaction]",
     reaction_scores: "dict[str, float]",
 ) -> "list[str]":
     """Greedy backward-elimination gap-filling.
 
-    1. Adds *all* candidates to a working copy.
+    1. Starts from a full template copy.
     2. Confirms the augmented model can grow.
     3. Removes candidates one by one in ascending score order (least
        important first); keeps a reaction only when its removal kills growth.
     """
-    # Try adding everything first
-    test_model = carved_model.copy()
-    test_model.add_reactions([r.copy() for r in candidates])
+    try:
+        test_model = _subset_template_model(
+            template_model,
+            {r.id for r in template_model.reactions},
+            carved_model,
+        )
+    except RecursionError as exc:
+        print(f"[gemiz]   Greedy gapfill setup failed: {exc}")
+        return []
 
     sol = test_model.optimize()
     if sol.status != "optimal" or sol.objective_value <= 1e-6:
@@ -615,6 +621,47 @@ def _greedy_gapfill(
     # Whatever remains (beyond the original carved reactions) is the minimal set
     carved_ids = {r.id for r in carved_model.reactions}
     return [r.id for r in test_model.reactions if r.id not in carved_ids]
+
+
+def _subset_template_model(
+    template_model: "cobra.Model",
+    keep_ids: "set[str]",
+    objective_source: "cobra.Model",
+) -> "cobra.Model":
+    """Copy a template and keep only selected reactions."""
+    model = template_model.copy()
+    to_remove = [r for r in model.reactions if r.id not in keep_ids]
+    if to_remove:
+        model.remove_reactions(to_remove, remove_orphans=True)
+
+    model.id = objective_source.id
+    model.name = objective_source.name
+    _copy_objective(model, objective_source)
+    return model
+
+
+def _copy_objective(
+    target_model: "cobra.Model",
+    source_model: "cobra.Model",
+) -> None:
+    """Preserve the selected biomass objective on a rebuilt model."""
+    objective = {
+        rxn.id: rxn.objective_coefficient
+        for rxn in source_model.reactions
+        if rxn.objective_coefficient != 0
+    }
+    if not objective:
+        return
+
+    present = {}
+    for rid, coefficient in objective.items():
+        try:
+            present[target_model.reactions.get_by_id(rid)] = coefficient
+        except KeyError:
+            continue
+
+    if present:
+        target_model.objective = present
 
 
 # ---------------------------------------------------------------------------

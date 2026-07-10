@@ -9,8 +9,13 @@ Called by the CLI ``gemiz carve`` command.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import cobra
 
 
 def run_full_pipeline(
@@ -27,6 +32,8 @@ def run_full_pipeline(
     threads: int = 4,
     sensitivity: float = 7.5,
     media: str | None = None,
+    evidence_output_path: str | None = None,
+    write_evidence: bool = True,
 ) -> dict:
     """Run the full GEM reconstruction pipeline.
 
@@ -63,6 +70,11 @@ def run_full_pipeline(
         Growth medium name (e.g. ``"M9"``, ``"LB"``).  When set, exchange
         reactions are constrained to match the medium before final growth
         verification.  Only used in universal mode.
+    evidence_output_path
+        Optional JSON sidecar path for per-reaction reconstruction evidence.
+        Defaults to ``<output_xml>.evidence.json`` when evidence export is on.
+    write_evidence
+        Whether to annotate reactions and write the evidence sidecar.
 
     Returns
     -------
@@ -281,6 +293,7 @@ def run_full_pipeline(
     # ------------------------------------------------------------------
     print("\n[5.5/6] Gap-filling...")
     t0 = time.perf_counter()
+    gapfill_added_ids: list[str] = []
 
     _sol = carved.optimize()
     _can_grow = _sol.status == "optimal" and _sol.objective_value > 1e-6
@@ -294,6 +307,7 @@ def run_full_pipeline(
         carved, _added = gapfill_model(
             carved, universal, reaction_scores, timeout=60.0
         )
+        gapfill_added_ids = list(_added)
         elapsed55 = time.perf_counter() - t0
         if _added:
             _sol2 = carved.optimize()
@@ -306,6 +320,18 @@ def run_full_pipeline(
             print("      Gap-filling could not restore growth  \u2717")
         results["gapfill_added"] = len(_added)
         results["step55_time"] = elapsed55
+
+    if write_evidence:
+        evidence_path = _write_reaction_evidence(
+            carved,
+            reaction_scores,
+            gapfill_added_ids,
+            genome_fna=genome_fna,
+            output_xml=output_xml,
+            evidence_output_path=evidence_output_path,
+            media=media,
+        )
+        results["evidence_path"] = str(evidence_path)
 
     # ------------------------------------------------------------------
     # Step 6: Save model
@@ -337,6 +363,86 @@ def run_full_pipeline(
     results["total_time"] = time.perf_counter() - t_total
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Evidence export
+# ---------------------------------------------------------------------------
+
+def _score_label(score: float) -> str:
+    """Return a compact evidence label for a reaction score."""
+    if score > 0.7:
+        return "strong"
+    if score > 0.3:
+        return "moderate"
+    if score > 0.0:
+        return "weak"
+    if score == 0.0:
+        return "neutral"
+    return "unsupported"
+
+
+def _write_reaction_evidence(
+    model: "cobra.Model",
+    reaction_scores: dict[str, float],
+    gapfill_added_ids: list[str],
+    *,
+    genome_fna: str,
+    output_xml: str,
+    evidence_output_path: str | None,
+    media: str | None,
+) -> Path:
+    """Annotate reactions and write a JSON sidecar with reconstruction evidence."""
+    added = set(gapfill_added_ids)
+    rows: list[dict[str, object]] = []
+    counts: dict[str, int] = {}
+
+    for rxn in model.reactions:
+        score = float(reaction_scores.get(rxn.id, 0.0))
+        label = _score_label(score)
+        was_gapfilled = rxn.id in added
+
+        rxn.notes = dict(rxn.notes or {})
+        rxn.notes["gemiz_score"] = f"{score:.6g}"
+        rxn.notes["gemiz_evidence"] = label
+        if was_gapfilled:
+            rxn.notes["gemiz_gapfilled"] = "true"
+
+        counts[label] = counts.get(label, 0) + 1
+        rows.append({
+            "reaction_id": rxn.id,
+            "name": rxn.name,
+            "score": round(score, 6),
+            "evidence": label,
+            "gapfilled": was_gapfilled,
+            "gpr": rxn.gene_reaction_rule,
+        })
+
+    sidecar = (
+        Path(evidence_output_path)
+        if evidence_output_path is not None
+        else Path(output_xml).with_suffix(Path(output_xml).suffix + ".evidence.json")
+    )
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "tool": "gemiz",
+        "genome": genome_fna,
+        "model": output_xml,
+        "media": media,
+        "summary": {
+            "n_reactions": len(model.reactions),
+            "n_gapfilled": len(added),
+            "evidence_counts": counts,
+        },
+        "reactions": rows,
+    }
+
+    with sidecar.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    print(f"      Evidence sidecar -> {sidecar}")
+    return sidecar
 
 
 # ---------------------------------------------------------------------------

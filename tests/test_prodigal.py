@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from gemiz.pipeline.prodigal import call_genes
 
 GENOME = Path("data/genomes/ecoli_k12.fna")
+needs_ecoli_genome = pytest.mark.skipif(
+    not GENOME.exists(),
+    reason=f"Optional benchmark genome not found: {GENOME}",
+)
 
 
 def test_pyrodigal_importable():
@@ -15,6 +21,7 @@ def test_pyrodigal_importable():
     print(f"\n  pyrodigal version : {pyrodigal.__version__}")
 
 
+@needs_ecoli_genome
 def test_call_genes_ecoli(tmp_path, capsys):
     """call_genes() must complete and print progress lines."""
     assert GENOME.exists(), f"Test genome not found: {GENOME}"
@@ -29,11 +36,12 @@ def test_call_genes_ecoli(tmp_path, capsys):
     assert Path(faa_path).exists()
 
 
+@needs_ecoli_genome
 def test_protein_count(tmp_path):
     """E. coli K-12 must yield >= 4000 proteins (typically 4319)."""
     faa_path = Path(call_genes(str(GENOME), str(tmp_path)))
 
-    headers = [l for l in faa_path.read_text().splitlines() if l.startswith(">")]
+    headers = [line for line in faa_path.read_text().splitlines() if line.startswith(">")]
     n = len(headers)
 
     print(f"\n  Proteins found : {n:,}")
@@ -44,6 +52,7 @@ def test_protein_count(tmp_path):
     assert n >= 4000, f"Expected >=4000 proteins, got {n}"
 
 
+@needs_ecoli_genome
 def test_output_is_valid_fasta(tmp_path):
     """Every sequence in the .faa must start with a > header line."""
     faa_path = Path(call_genes(str(GENOME), str(tmp_path)))

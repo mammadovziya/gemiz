@@ -10,9 +10,12 @@ when --all is passed (needed for building a distributable wheel).
 """
 from __future__ import annotations
 import argparse
+import io
 import platform
+import shutil
 import stat
 import sys
+import tarfile
 import urllib.request
 from pathlib import Path
 
@@ -43,19 +46,28 @@ def _platform_binary() -> str:
 
 
 def _download(name: str, url: str) -> None:
-    import io, tarfile
     dest = BIN_DIR / name
     if dest.exists():
-        print(f"  {name}: already present, skipping")
-        return
+        if dest.is_file():
+            print(f"  {name}: already present, skipping")
+            return
+        print(f"  {name}: removing invalid directory from previous download")
+        shutil.rmtree(dest)
     print(f"  {name}: downloading from {url}")
     with urllib.request.urlopen(url) as resp:
         data = io.BytesIO(resp.read())
     with tarfile.open(fileobj=data) as tf:
-        # The binary inside the tar is always named "mmseqs"
-        member = next(m for m in tf.getmembers() if m.name.endswith("mmseqs"))
-        member.name = name
-        tf.extract(member, path=BIN_DIR)
+        members = [
+            m for m in tf.getmembers()
+            if m.isfile() and Path(m.name).name == "mmseqs"
+        ]
+        if not members:
+            raise RuntimeError(f"No executable named 'mmseqs' found in {url}")
+        src = tf.extractfile(members[0])
+        if src is None:
+            raise RuntimeError(f"Could not extract mmseqs from {url}")
+        with dest.open("wb") as out:
+            shutil.copyfileobj(src, out)
     dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     print(f"  {name}: OK ({dest.stat().st_size // 1024 // 1024} MB)")
 

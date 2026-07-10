@@ -55,7 +55,10 @@ data/comparison/
 data/.gemiz_*/
 
 # Benchmark outputs
+data/benchmark_manifest.json
 data/benchmark_results.json
+data/**/*.quality.json
+data/comparison_*/
 
 # Embeddings / indexes
 *.npz

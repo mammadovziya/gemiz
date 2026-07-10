@@ -289,9 +289,9 @@ def diagnose_id_mapping(
     # Direct overlap (after resolution)
     direct_overlap = mmseqs_ref_ids & gpr_genes
 
-    print(f"\n[gemiz] === ID Mapping Diagnostic ===")
+    print("\n[gemiz] === ID Mapping Diagnostic ===")
     if universal_mode:
-        print(f"[gemiz]   Mode: universal (pipe-delimited ref IDs)")
+        print("[gemiz]   Mode: universal (pipe-delimited ref IDs)")
     print(f"[gemiz]   MMseqs2 ref IDs:    {len(mmseqs_raw_ids)}")
     print(f"[gemiz]   Resolved gene IDs:  {len(mmseqs_ref_ids)}")
     print(f"[gemiz]   GPR gene IDs:       {len(gpr_genes)}")
@@ -304,7 +304,7 @@ def diagnose_id_mapping(
     print(f"[gemiz]   Sample resolved IDs: {sample_resolved}")
     print(f"[gemiz]   Sample GPR IDs:      {sample_gpr}")
 
-    print(f"[gemiz] ================================\n")
+    print("[gemiz] ================================\n")
 
 
 # ---------------------------------------------------------------------------
@@ -547,6 +547,24 @@ def _load_universal_gpr(
     return {rid: sorted(genes) for rid, genes in reaction_proteins.items()}
 
 
+def _load_universal_gpr_rules(
+    csv_path: Path,
+) -> dict[str, list[str]]:
+    """Load universal_gpr.csv as reaction_id -> source-model GPR rules."""
+    reaction_rules: dict[str, list[str]] = {}
+
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rxn_id = row["reaction_id"]
+            gpr = row.get("gpr", "").strip()
+            if not gpr:
+                continue
+            reaction_rules.setdefault(rxn_id, []).append(gpr)
+
+    return reaction_rules
+
+
 def _build_protein_scores_from_hits(
     mmseqs_hits: dict[str, list[dict]],
     esmc_hits: dict[str, list[dict]],
@@ -596,9 +614,9 @@ def _score_reactions_universal(
 ) -> dict[str, float]:
     """Universal mode scoring: protein→reaction via universal_gpr.csv.
 
-    Does NOT use the template model's GPRs (CarveMe universe has 0 genes).
-    Instead, loads the GPR mappings from the CSV built by build_universal_db.py
-    and scores each reaction by the best-matching protein.
+    Does not rely on the template model's GPRs, because the CarveMe universe
+    may have no genes. It evaluates source-model GPR rules with normal AND/OR
+    semantics instead of treating any single matching subunit as sufficient.
     """
     csv_path = _UNIVERSAL_GPR_CSV
     if not csv_path.exists():
@@ -607,9 +625,9 @@ def _score_reactions_universal(
         return {}
 
     # 1 — reaction → [locus_tags] from CSV
-    reaction_proteins = _load_universal_gpr(csv_path)
+    reaction_rules = _load_universal_gpr_rules(csv_path)
     print(f"[gemiz] Loaded universal_gpr.csv: "
-          f"{len(reaction_proteins)} reactions with GPR data")
+          f"{len(reaction_rules)} reactions with GPR data")
 
     # 2 — locus_tag → score from hits
     protein_scores = _build_protein_scores_from_hits(
@@ -621,29 +639,29 @@ def _score_reactions_universal(
     model_rxn_ids = {r.id for r in universal_model.reactions}
     reaction_scores: dict[str, float] = {}
 
-    n_with_evidence = 0
-    n_penalized = 0
-    n_neutral = 0
-
     for rxn_id in model_rxn_ids:
-        genes = reaction_proteins.get(rxn_id)
+        rules = reaction_rules.get(rxn_id)
 
-        if genes is None:
+        if rules is None:
             # Reaction not in CSV — neutral (transport, exchange, etc.)
             reaction_scores[rxn_id] = 0.0
-            n_neutral += 1
             continue
 
-        # Find best protein score among all genes linked to this reaction
-        gene_scores = [protein_scores.get(g, 0.0) for g in genes]
-        best = max(gene_scores) if gene_scores else 0.0
+        # Multiple source models can contribute rules for the same reaction.
+        # Treat those alternatives as OR, but preserve AND/OR logic inside each
+        # individual source-model GPR. This prevents one detected subunit from
+        # over-supporting an enzyme complex.
+        rule_scores = [
+            evaluate_gpr_rule(rule, protein_scores)
+            for rule in rules
+            if rule.strip()
+        ]
+        best = max(rule_scores) if rule_scores else 0.0
 
         if best > 0:
             reaction_scores[rxn_id] = best
-            n_with_evidence += 1
         else:
             reaction_scores[rxn_id] = NO_EVIDENCE_SCORE
-            n_penalized += 1
 
     return reaction_scores
 

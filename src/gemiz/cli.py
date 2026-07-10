@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sys
-import time
 from pathlib import Path
 
 import click
@@ -23,6 +22,7 @@ _DEFAULT_FEAT_TBL  = "data/reference/ecoli_feature_table.txt"
 _UNIVERSAL_TEMPLATE = "data/universal/db/universal_template.xml"
 _UNIVERSAL_FAA      = "data/universal/db/universal_proteins.faa"
 _UNIVERSAL_MMSEQS   = "data/universal/db/mmseqs_db"
+_UNIVERSAL_ESM      = "data/universal/db/esm_db"
 
 # CarveMe bacteria universe (preferred template for universal mode)
 _CARVEME_UNIVERSE   = "data/universal/carveme_bacteria.xml"
@@ -142,6 +142,19 @@ def main(ctx: click.Context, verbose: bool) -> None:
     help="Growth medium for universal mode (constrains exchange reactions). "
          "Use 'none' to skip media constraints.",
 )
+@click.option(
+    "--evidence-output",
+    type=click.Path(dir_okay=False, writable=True, path_type=Path),
+    default=None,
+    help="Write per-reaction reconstruction evidence JSON to this path "
+         "(default: <output>.evidence.json).",
+)
+@click.option(
+    "--no-evidence-output",
+    is_flag=True,
+    default=False,
+    help="Disable per-reaction evidence sidecar export.",
+)
 @click.pass_context
 def carve(
     ctx: click.Context,
@@ -160,6 +173,8 @@ def carve(
     min_growth: float,
     sensitivity: float,
     media: str,
+    evidence_output: Path | None,
+    no_evidence_output: bool,
 ) -> None:
     """Reconstruct a GEM from a raw genome FASTA file.
 
@@ -201,6 +216,7 @@ def carve(
     # Detect universal mode: no --organism and no explicit --template/--reference
     _univ_faa      = Path(_UNIVERSAL_FAA)
     _univ_mmseqs   = Path(_UNIVERSAL_MMSEQS)
+    _univ_esm      = Path(_UNIVERSAL_ESM)
     _carveme_univ  = Path(_CARVEME_UNIVERSE)
     _univ_template = Path(_UNIVERSAL_TEMPLATE)
     _universal_mode = (
@@ -211,8 +227,8 @@ def carve(
     )
 
     if _universal_mode:
-        console.print(f"  Mode:       [cyan]universal[/] "
-                      f"(data/universal/db/)")
+        console.print("  Mode:       [cyan]universal[/] "
+                      "(data/universal/db/)")
         # Prefer CarveMe bacteria universe (5532 rxns, proper Growth objective)
         if template is None:
             if _carveme_univ.exists():
@@ -226,8 +242,8 @@ def carve(
         if reference is None:
             reference = _univ_faa
         # feature_table left as None — scoring uses universal_gpr.csv directly
-        if esm_db is None and _univ_mmseqs.exists():
-            esm_db = _univ_mmseqs
+        if esm_db is None and _univ_esm.exists():
+            esm_db = _univ_esm
     else:
         if template is None:
             # Default: use the organism's gold standard as template
@@ -307,6 +323,8 @@ def carve(
         threads=threads,
         sensitivity=sensitivity,
         media=media if (_universal_mode and media != "none") else None,
+        evidence_output_path=str(evidence_output) if evidence_output else None,
+        write_evidence=not no_evidence_output,
     )
 
     # ---- summary ----

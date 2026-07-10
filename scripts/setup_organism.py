@@ -150,7 +150,9 @@ def download_bigg_model(model_id: str, dest: Path) -> Path:
 
     urls = [
         (f"https://bigg.ucsd.edu/static/models/{model_id}.xml.gz", "xml.gz"),
+        (f"http://bigg.ucsd.edu/static/models/{model_id}.xml.gz", "xml.gz"),
         (f"https://bigg.ucsd.edu/static/models/{model_id}.json", "json"),
+        (f"http://bigg.ucsd.edu/static/models/{model_id}.json", "json"),
         (f"http://bigg.ucsd.edu/api/v2/models/{model_id}/download", "xml.gz"),
     ]
 
@@ -161,7 +163,7 @@ def download_bigg_model(model_id: str, dest: Path) -> Path:
         try:
             tmp_path = dest / f"{model_id}_tmp.{fmt}"
             _download_file(url, tmp_path)
-        except (FileNotFoundError, requests.HTTPError) as e:
+        except (FileNotFoundError, requests.RequestException) as e:
             print(f"    -> {e}")
             if tmp_path.exists():
                 tmp_path.unlink()
@@ -175,7 +177,7 @@ def download_bigg_model(model_id: str, dest: Path) -> Path:
         elif fmt == "json":
             # BiGG JSON format — convert to SBML via COBRApy
             import cobra
-            print(f"    Converting JSON -> SBML ...")
+            print("    Converting JSON -> SBML ...")
             m = cobra.io.load_json_model(str(tmp_path))
             cobra.io.write_sbml_model(m, str(out_path))
             tmp_path.unlink()
@@ -223,7 +225,7 @@ def build_esm_db(proteins_faa: Path, dest: Path) -> Path:
 
     from gemiz.embedding.database import generate_reference_db
 
-    print(f"  Generating ESM C reference database ...")
+    print("  Generating ESM C reference database ...")
     generate_reference_db(str(proteins_faa), str(db_dir))
     print(f"  Saved to {db_dir}")
     return db_dir
@@ -324,18 +326,18 @@ def main() -> None:
 
     # Step 2: feature table
     print("\n[2/5] Downloading feature table from NCBI ...")
-    feature_table = download_feature_table(args.ncbi_assembly, dest)
+    download_feature_table(args.ncbi_assembly, dest)
 
     # Step 3: Gold standard model (optional)
     if args.gold_standard:
-        print(f"\n[3/5] Copying local gold-standard model ...")
+        print("\n[3/5] Copying local gold-standard model ...")
         gs_path = Path(args.gold_standard)
         if not gs_path.exists():
             print(f"  ERROR: file not found: {gs_path}", file=sys.stderr)
             sys.exit(1)
         copy_gold_standard(gs_path, dest)
     elif args.bigg_model and not args.skip_bigg:
-        print(f"\n[3/5] Downloading gold-standard model from BiGG ...")
+        print("\n[3/5] Downloading gold-standard model from BiGG ...")
         download_bigg_model(args.bigg_model, dest)
     else:
         print("\n[3/5] No gold-standard model specified, skipping.")
@@ -400,13 +402,13 @@ def main() -> None:
                 label = f"{size} B"
             print(f"  {p.relative_to(dest)}  ({label})")
 
-    print(f"\nTo reconstruct a model:")
-    print(f"  gemiz carve <genome>.fna \\")
+    print("\nTo reconstruct a model:")
+    print("  gemiz carve <genome>.fna \\")
     print(f"    --reference {dest}/proteins.faa \\")
     print(f"    --feature-table {dest}/feature_table.txt \\")
     if (dest / "esm_db").exists():
         print(f"    --esm-db {dest}/esm_db \\")
-    print(f"    -o <output>.xml")
+    print("    -o <output>.xml")
 
 
 if __name__ == "__main__":

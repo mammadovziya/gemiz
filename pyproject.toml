@@ -5,12 +5,23 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gemiz"
 version = "0.1.0"
-description = "Genome-scale metabolic model reconstruction for bacteria"
+description = "Alpha toolkit for bacterial genome-scale metabolic model reconstruction in bacteria"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "gemiz contributors" }]
-keywords = ["bioinformatics", "metabolic-modeling", "GEM", "systems-biology"]
+keywords = [
+    "bioinformatics",
+    "systems-biology",
+    "metabolic-modeling",
+    "genome-scale-metabolic-model",
+    "GEM",
+    "COBRApy",
+    "flux-balance-analysis",
+    "SBML",
+    "bacterial-genomics",
+    "protein-embeddings",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -64,8 +75,8 @@ dev = [
 gemiz = "gemiz.cli:main"
 
 [project.urls]
-Repository = "https://github.com/gemiz/gemiz"
-Issues = "https://github.com/gemiz/gemiz/issues"
+Repository = "https://github.com/mammadovziya/gemiz"
+Issues = "https://github.com/mammadovziya/gemiz/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
