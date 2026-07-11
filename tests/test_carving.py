@@ -11,9 +11,11 @@ from pathlib import Path
 
 import pytest
 
+import gemiz.reconstruction.carving as carving_module
 from gemiz.reconstruction.carving import (
     carve_model,
     extract_carved_model,
+    gapfill_model,
     setup_milp,
     solve_highs_milp,
     verify_model,
@@ -126,6 +128,51 @@ def test_carve_model(iml1515, reaction_scores):
     assert len(model.reactions) < 2500
     assert len(model.metabolites) > 200
     assert len(model.genes) > 100
+
+
+def test_gapfill_greedy_restores_growth(monkeypatch):
+    """Greedy gapfill should restore growth without per-reaction copy loops."""
+    import cobra
+
+    glc_e = cobra.Metabolite("glc__D_e", compartment="e")
+    glc_c = cobra.Metabolite("glc__D_c", compartment="c")
+
+    exchange = cobra.Reaction("EX_glc__D_e")
+    exchange.lower_bound = -10.0
+    exchange.upper_bound = 1000.0
+    exchange.add_metabolites({glc_e: -1.0})
+
+    transport = cobra.Reaction("GLCtex")
+    transport.lower_bound = 0.0
+    transport.upper_bound = 1000.0
+    transport.add_metabolites({glc_e: -1.0, glc_c: 1.0})
+
+    biomass = cobra.Reaction("BIOMASS")
+    biomass.lower_bound = 0.0
+    biomass.upper_bound = 1000.0
+    biomass.add_metabolites({glc_c: -1.0})
+
+    template = cobra.Model("toy_template")
+    template.add_reactions([exchange, transport, biomass])
+    template.objective = "BIOMASS"
+
+    carved = template.copy()
+    carved.remove_reactions(
+        [carved.reactions.get_by_id("GLCtex")],
+        remove_orphans=True,
+    )
+
+    monkeypatch.setattr(carving_module, "_try_cobra_gapfill",
+                        lambda *_args, **_kwargs: [])
+
+    filled, added_ids = gapfill_model(carved, template, {}, timeout=0.0)
+
+    assert added_ids == ["GLCtex"]
+    assert "GLCtex" in {r.id for r in filled.reactions}
+
+    solution = filled.optimize()
+    assert solution.status == "optimal"
+    assert solution.objective_value > 1e-6
 
 
 # ---------------------------------------------------------------------------

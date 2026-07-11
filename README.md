@@ -1,157 +1,133 @@
-# gemiz
+# Gemiz
 
-Experimental genome-scale metabolic model reconstruction for bacteria.
+Open-source bacterial genome-scale metabolic model reconstruction from raw genome FASTA files.
 
-`gemiz` is an alpha-stage research project for reconstructing draft
-genome-scale metabolic models (GEMs) from bacterial genome FASTA files. It
-combines gene calling, protein homology search, optional protein language model
-embeddings, reaction scoring, COBRApy model handling, MILP-based model carving,
-gap filling, and SBML export.
+Gemiz is a Python toolkit for reconstructing draft genome-scale metabolic models (GEMs) from bacterial genomes using free and open-source software. It combines gene calling, protein homology search, reaction evidence scoring, COBRApy model handling, HiGHS optimization, gap filling, SBML export, model-quality checks, and reproducible benchmarking against tools such as CarveMe, gapseq, ModelSEED, and curated BiGG models.
 
-The project is under active development. It is useful for experimentation,
-benchmarking, and methods development, but it is not yet a polished
-production-grade replacement for mature GEM reconstruction tools.
+Gemiz is designed for researchers, bioinformaticians, systems biologists, metabolic engineers, and computational biology teams who need a transparent, scriptable, no-paid-software workflow for bacterial GEM reconstruction.
 
-Keywords: genome-scale metabolic model reconstruction, GEM reconstruction,
-constraint-based modeling, COBRApy, systems biology, metabolic network
-reconstruction, bacterial genomes, BiGG models, iML1515, MMseqs2, ESM-C,
-protein embeddings, FAISS, HiGHS, SBML, flux balance analysis.
+Keywords: genome-scale metabolic model reconstruction, GEM reconstruction, bacterial metabolic model reconstruction, metabolic network reconstruction, constraint-based modeling, flux balance analysis, FBA, COBRApy, SBML, BiGG models, ModelSEED, CarveMe alternative, gapseq alternative, pyrodigal, MMseqs2, HiGHS, systems biology, bacterial genomics, metabolic engineering, bioinformatics.
 
-## Project Status
+## Status
 
-| Area | Current status |
+Gemiz is an alpha-stage research project. The open-source repository contains the core reconstruction and benchmarking pipeline. The ESM-C protein-language-model enhancement is being developed privately and is not part of the currently available public feature set. Public Gemiz should be treated as a transparent homology-first GEM reconstruction toolkit with experimental hooks for future embedding-assisted scoring.
+
+| Area | Public status |
 | --- | --- |
-| Package maturity | Alpha research prototype (`0.1.0`) |
-| Main target | Bacterial GEM reconstruction |
-| Eukaryotes | Not supported yet |
-| Installation | Source install only; not presented as a PyPI release |
-| Core pipeline | Implemented, but requires local reference data and binaries |
-| ESM-C support | Optional experimental scoring signal |
-| Benchmarking | Scripts exist; results should be regenerated locally before making claims |
-| Windows support | Development works on Windows, but reconstruction benchmarks should run in WSL2/Linux |
+| Raw genome FASTA input | Available |
+| Bacterial gene calling | Available |
+| MMseqs2 homology search | Available |
+| Universal bacterial template import | Available |
+| COBRApy/HiGHS model carving | Available |
+| Gap filling | Available |
+| SBML export | Available |
+| Model quality reports | Available |
+| Competitor benchmarking | Available |
+| ESM-C enhanced scoring | Private R&D / not publicly released |
+| Eukaryotic GEM reconstruction | Not supported yet |
 
-## What gemiz Does Today
+## Why Gemiz
 
-- Calls protein-coding genes from bacterial genomes with `pyrodigal`.
-- Aligns predicted proteins against reference proteins with MMseqs2.
-- Optionally embeds low-confidence proteins with ESM-C 600M and searches a FAISS reference index.
-- Converts protein-level evidence into reaction-level scores through GPR rules and reference mappings.
-- Uses COBRApy models as templates and exports SBML models.
-- Uses HiGHS/COBRApy-based optimization for reaction selection and gap filling.
-- Includes scripts for preparing E. coli benchmark data, inspecting model quality, and comparing reconstructed models with gold-standard SBML models.
+Most automated GEM reconstruction tools are difficult to inspect, hard to benchmark fairly, or depend on large external databases and hidden assumptions. Gemiz focuses on a reproducible open workflow:
 
-## What gemiz Does Not Claim Yet
+- Raw bacterial genome FASTA in, draft SBML GEM out.
+- No paid solver required; optimization uses HiGHS and COBRApy.
+- MMseqs2-based protein homology search for fast evidence collection.
+- Universal bacterial reconstruction mode using open CarveMe/BiGG assets.
+- Per-reaction evidence sidecar JSON for auditability.
+- Reproducible benchmarking against gold-standard SBML models.
+- Explicit comparison scripts for Gemiz, CarveMe, gapseq, and external models.
 
-- It does not claim to reconstruct high-quality models for every bacterium.
-- It does not yet support eukaryotic reconstruction.
-- It does not claim to outperform CarveMe, ModelSEED, gapseq, or other tools without running the benchmark workflow on the same input data and hardware.
-- It does not claim that ESM-C improves reconstruction accuracy until the ablation benchmark has been run and reported.
-- It does not ship large reference databases in git.
-- It is not currently documented as a one-command PyPI installation.
+Gemiz is not presented as a black box. Every major step has code, command-line output, and saved artifacts that can be inspected.
 
-## Why This Project Exists
+## Available Features
 
-Most GEM reconstruction pipelines rely heavily on sequence homology and curated
-reaction templates. `gemiz` explores whether protein language model embeddings
-can add useful signal when homology is weak, especially for proteins in the
-sequence-identity twilight zone.
+### Genome To GEM Pipeline
 
-The working hypothesis is:
-
-> Homology search should stay the primary evidence source for high-confidence
-> enzyme assignments, while protein embeddings may help rank or rescue
-> lower-confidence gene-reaction mappings.
-
-This is a research direction, not yet a validated conclusion.
-
-## Pipeline Overview
+Gemiz can reconstruct a draft bacterial metabolic model from a raw genome FASTA:
 
 ```text
 genome.fna
-  |
-  +-- [1] pyrodigal gene calling
-  |        -> proteins.faa
-  |
-  +-- [2] MMseqs2 protein alignment
-  |        -> sequence similarity hits
-  |
-  +-- [3] optional ESM-C 600M embeddings
-  |        -> embedding similarity hits through FAISS
-  |
-  +-- [4] reaction scoring
-  |        -> score per reaction from GPR evidence
-  |
-  +-- [5] model carving / reaction selection
-  |        -> draft organism model
-  |
-  +-- [6] gap filling and FBA checks
-  |        -> growth-feasible model when possible
-  |
-  +-- [7] SBML export
-           -> model.xml
+  -> pyrodigal gene calling
+  -> proteins.faa
+  -> MMseqs2 homology search
+  -> reaction evidence scoring
+  -> HiGHS MILP model carving
+  -> gap filling and FBA validation
+  -> SBML model.xml
+  -> evidence JSON sidecar
 ```
 
-## Methods
+### Universal Bacterial Reconstruction
 
-### Gene Calling
+The public pipeline can import open CarveMe/BiGG bacterial assets into Gemiz's local universal database layout:
 
-`gemiz` uses `pyrodigal`, a Python/Cython implementation of Prodigal, to predict
-protein-coding genes from input genome FASTA files.
+```bash
+python scripts/import_carveme_assets.py
+```
 
-### Homology Search
-
-Protein alignment is performed with MMseqs2. High-identity matches are treated
-as the strongest source of evidence for gene-reaction mapping.
-
-### Optional Embedding Signal
-
-For low-confidence proteins, `gemiz` can use ESM-C 600M embeddings and FAISS
-nearest-neighbor search against a reference embedding database. This path is
-optional because it requires additional dependencies and may require GPU memory
-for practical runtimes.
-
-### Reaction Scoring
-
-Reaction scores are derived from protein evidence and gene-protein-reaction
-(GPR) rules:
-
-| Score range | Interpretation |
-| --- | --- |
-| `> 0.7` | Strong evidence |
-| `0.3` to `0.7` | Moderate or blended evidence |
-| `0.0` to `0.3` | Weak evidence |
-| `0.0` | No GPR / spontaneous / neutral |
-| `-1.0` | Enzyme reaction with no supporting evidence |
-
-The thresholds are experimental and should be tuned with validation data before
-being used for biological conclusions.
-
-## Repository Layout
+This creates ignored local data files:
 
 ```text
-src/gemiz/
-  cli.py                         command-line interface
-  pipeline/                      gene calling and alignment helpers
-  embedding/                     ESM-C and FAISS embedding utilities
-  reconstruction/                scoring, carving, gap filling, full pipeline
-  quality.py                     model quality summaries
-  io/                            SBML helpers
-  utils/                         binary resolution helpers
-
-scripts/
-  setup_benchmark_data.py        download E. coli benchmark fixture
-  download_mmseqs.py             download MMseqs2 binary
-  build_universal_db.py          build local universal reference database
-  benchmark.py                   compare models to gold standards
-  benchmark_competitors.py       run explicit tool comparison workflow
-  model_quality.py               summarize SBML model quality
-  validate_essentiality.py       experimental essentiality validation
-
-tests/
-  test_*.py                      unit, smoke, and optional integration tests
+data/universal/carveme_bacteria.xml
+data/universal/db/universal_proteins.faa
+data/universal/db/universal_gpr.csv
+data/universal/db/mmseqs_db/
 ```
 
-## Installation From Source
+After that, Gemiz can run in universal bacterial mode without using an organism's own gold-standard model as the reconstruction template.
+
+### Evidence-Aware Reaction Selection
+
+Gemiz scores reactions from protein evidence and GPR rules. Reactions with strong sequence evidence are preferred, unsupported enzyme reactions are penalized, and neutral no-GPR reactions receive a small penalty so the model does not keep arbitrary free reactions unless they are needed for growth.
+
+### Gap Filling
+
+Gemiz first attempts COBRApy gap filling, then uses a prioritized open fallback for common single-reaction growth fixes such as sink, demand, exchange, and transport reactions. This avoids paid solvers and reduces failure cases in large universal templates.
+
+### Benchmarking
+
+Gemiz includes a benchmark runner that records:
+
+- command line
+- runtime
+- growth status and growth rate
+- reaction precision, recall, and F1 against a gold-standard SBML model
+- model quality summary
+- skipped/error status for missing competitor tools
+
+Example:
+
+```bash
+python scripts/benchmark_competitors.py \
+  --organism ecoli \
+  --genome data/genomes/ecoli_k12.fna \
+  --gold-standard data/universal/iML1515.xml \
+  --tools gemiz carveme
+```
+
+Benchmark claims should always be regenerated on the same hardware, same input genome, same databases, and same tool versions.
+
+## ESM-C Roadmap
+
+ESM-C support is a private development track. The goal is to improve reconstruction when homology is weak by using protein language model embeddings as an additional signal for low-confidence proteins.
+
+Current public repository:
+
+- Homology-first reconstruction is available.
+- Universal bacterial reconstruction is available.
+- Benchmarking and model-quality tooling are available.
+- ESM-C enhanced production scoring is not publicly released yet.
+
+Planned private ESM-C direction:
+
+- Embed low-confidence proteins.
+- Search against a reference embedding index.
+- Blend homology and embedding evidence.
+- Run ablation studies comparing homology-only reconstruction with homology plus ESM-C.
+- Release only after accuracy, runtime, and reproducibility are validated.
+
+## Installation
 
 Python 3.11 or newer is recommended.
 
@@ -161,53 +137,50 @@ cd gemiz
 python -m pip install -e ".[dev]"
 ```
 
-Optional embedding dependencies:
+On Windows, use WSL2/Linux for full reconstruction and benchmarks because MMseqs2 is Linux-oriented in this project workflow.
 
-```bash
-python -m pip install -e ".[embeddings,dev]"
-```
-
-On native Windows, MMseqs2 is not self-contained. Use WSL2/Linux for full
-reconstruction and benchmark runs.
-
-## Prepare Local Data
-
-Large biological assets are intentionally not committed to git.
-
-For the smaller E. coli benchmark fixture:
-
-```bash
-python scripts/setup_benchmark_data.py
-```
-
-This downloads public data into:
-
-```text
-data/genomes/ecoli_k12.fna
-data/reference/iML1515_proteins.faa
-data/reference/ecoli_feature_table.txt
-data/universal/iML1515.xml
-```
-
-For MMseqs2:
+Download or verify the bundled MMseqs2 binary:
 
 ```bash
 python scripts/download_mmseqs.py
 ```
 
-For the larger universal database:
+## Prepare Data
+
+Large biological assets are not committed to git.
+
+For the small E. coli benchmark fixture:
+
+```bash
+python scripts/setup_benchmark_data.py
+```
+
+For broad bacterial universal mode:
+
+```bash
+python scripts/import_carveme_assets.py
+```
+
+For a larger from-source universal database rebuilt from public BiGG/NCBI data:
 
 ```bash
 python scripts/build_universal_db.py
 ```
 
-The universal database build downloads and processes many public models and can
-take hours. It should be treated as a reproducible local build step, not as data
-that is already present after cloning.
+The full from-source build can take hours and should be treated as a reproducible local data build step.
 
-## Basic Usage
+## Usage
 
-After installing dependencies and preparing reference data:
+Run Gemiz in universal bacterial mode after importing the open assets:
+
+```bash
+gemiz carve data/genomes/ecoli_k12.fna \
+  --no-esm \
+  --threads 4 \
+  -o data/test_outputs/ecoli_model.xml
+```
+
+Run with explicit template/reference files:
 
 ```bash
 gemiz carve data/genomes/ecoli_k12.fna \
@@ -218,7 +191,7 @@ gemiz carve data/genomes/ecoli_k12.fna \
   -o data/test_outputs/ecoli_model.xml
 ```
 
-Inspect a generated model:
+Inspect a model:
 
 ```bash
 gemiz info data/test_outputs/ecoli_model.xml
@@ -226,18 +199,11 @@ gemiz validate data/test_outputs/ecoli_model.xml
 python scripts/model_quality.py data/test_outputs/ecoli_model.xml
 ```
 
-## Benchmarking
+## Benchmarking Against Competitors
 
-Do not copy benchmark numbers from this README into papers, posters, resumes, or
-claims. Generate them from the current code and data.
+Gemiz is built to be compared, not merely advertised. Use the benchmark runner before making claims about accuracy or speed.
 
-Prepare the E. coli fixture:
-
-```bash
-python scripts/setup_benchmark_data.py
-```
-
-Run a gemiz-only benchmark:
+Gemiz only:
 
 ```bash
 python scripts/benchmark_competitors.py \
@@ -247,48 +213,83 @@ python scripts/benchmark_competitors.py \
   --tools gemiz
 ```
 
-If competitor tools are installed, include them explicitly:
+Gemiz and CarveMe:
 
 ```bash
 python scripts/benchmark_competitors.py \
   --organism ecoli \
   --genome data/genomes/ecoli_k12.fna \
   --gold-standard data/universal/iML1515.xml \
-  --tools gemiz carveme gapseq
+  --tools gemiz carveme
 ```
 
-The benchmark summary records commands, runtime, model statistics, growth
-status, precision, recall, and F1 where possible.
+Gemiz and gapseq, if gapseq is installed:
+
+```bash
+python scripts/benchmark_competitors.py \
+  --organism ecoli \
+  --genome data/genomes/ecoli_k12.fna \
+  --gold-standard data/universal/iML1515.xml \
+  --tools gemiz gapseq \
+  --gapseq-command-template "gapseq ... {genome} ... {model}"
+```
+
+## Repository Layout
+
+```text
+src/gemiz/
+  cli.py                         command-line interface
+  pipeline/                      gene calling and alignment
+  reconstruction/                scoring, carving, gap filling, full pipeline
+  quality.py                     model quality summaries
+  io/                            SBML helpers
+  utils/                         binary resolution helpers
+
+scripts/
+  setup_benchmark_data.py        download E. coli benchmark fixture
+  download_mmseqs.py             download MMseqs2 binary
+  import_carveme_assets.py       import open CarveMe/BiGG universal assets
+  build_universal_db.py          build universal database from public sources
+  benchmark_competitors.py       compare Gemiz with CarveMe, gapseq, ModelSEED
+  model_quality.py               summarize SBML model quality
+  validate_essentiality.py       experimental essentiality validation
+
+tests/
+  test_*.py                      unit, smoke, and optional integration tests
+```
 
 ## Testing
-
-Run the lightweight test suite:
 
 ```bash
 pytest -q
 ```
 
-Some tests are skipped unless optional benchmark data, MMseqs2 binaries, ESM-C
-dependencies, or WSL2/Linux are available. This is intentional: large public
-reference files are downloaded locally instead of committed to the repository.
+Some tests are skipped unless optional local data has been downloaded. This is intentional; large biological databases are generated locally instead of committed to the repository.
 
-## Development Roadmap
+## What Gemiz Does Not Claim Yet
 
-- Make the source install and benchmark setup reproducible from a fresh clone.
-- Keep optional data-dependent tests skipped until fixtures are downloaded.
-- Add clear benchmark artifacts for E. coli reconstruction against iML1515.
-- Add ablation studies comparing homology-only scoring with homology plus ESM-C.
-- Improve reaction evidence sidecars and model quality reports.
-- Document limitations around templates, GPR mappings, biomass reactions, media constraints, and gap filling.
-- Clean stale DIAMOND/Gurobi skeleton references from older modules.
-- Expand validation beyond E. coli only after the first benchmark path is stable.
+- It is not a finished production-grade GEM reconstruction platform.
+- It does not yet support eukaryotes.
+- It does not publicly ship the private ESM-C enhanced reconstruction system.
+- It does not guarantee high-quality models for every bacterial genome.
+- It does not make universal performance claims without benchmark artifacts.
+- It does not replace manual curation for publishable metabolic models.
 
-## Suggested GitHub Repository Metadata
+## Roadmap
+
+- Project query-gene GPR rules into universal SBML outputs.
+- Reduce runtime in universal bacterial mode.
+- Add more organism benchmarks beyond E. coli.
+- Add gapseq benchmark examples once an installation command is available.
+- Improve media handling and growth-condition reporting.
+- Continue private ESM-C development and release only after validated ablation benchmarks.
+
+## Suggested GitHub Metadata
 
 Description:
 
 ```text
-Alpha Python toolkit for bacterial genome-scale metabolic model reconstruction using pyrodigal, MMseqs2, COBRApy, optional ESM-C protein embeddings, FAISS, and HiGHS.
+Open-source bacterial genome-scale metabolic model reconstruction from FASTA using pyrodigal, MMseqs2, COBRApy, HiGHS, SBML, and reproducible benchmarking.
 ```
 
 Topics:
@@ -303,21 +304,19 @@ cobrapy
 flux-balance-analysis
 sbml
 bigg-models
+modelseed
+carveme-alternative
+gapseq-alternative
 bacterial-genomics
-protein-embeddings
-esm-c
+metabolic-engineering
 mmseqs2
-faiss
 highs
 python
 ```
 
-## Citation and Responsible Use
+## Responsible Use
 
-This repository is a research prototype. Reconstructed GEMs should be treated as
-draft models and inspected before biological interpretation. Any performance or
-accuracy claim should include the exact input genome, reference model, database
-version, tool versions, hardware, command line, and benchmark output.
+Gemiz produces draft metabolic models. Always inspect reconstructed GEMs before biological interpretation, publication, strain design, or downstream simulation. Report input genomes, database versions, command lines, hardware, tool versions, and benchmark artifacts with any accuracy or speed claim.
 
 ## License
 

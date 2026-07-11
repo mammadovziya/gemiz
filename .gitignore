@@ -59,6 +59,8 @@ data/benchmark_manifest.json
 data/benchmark_results.json
 data/**/*.quality.json
 data/comparison_*/
+data/test_outputs/
+data/esm_ablation/
 
 # Embeddings / indexes
 *.npz

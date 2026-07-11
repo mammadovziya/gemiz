@@ -27,8 +27,12 @@ MILP formulation
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import cobra
 
 INF = 1e30
 
@@ -43,6 +47,7 @@ def carve_model(
     min_growth: float = 0.1,
     epsilon: float = 0.001,
     bigM: float = 1000.0,
+    neutral_penalty: float = -0.01,
 ) -> "cobra.Model":
     """Carve an organism-specific model from a universal template.
 
@@ -58,6 +63,10 @@ def carve_model(
         Small flux for indicator constraints.
     bigM
         Big-M constant for indicator constraints.
+    neutral_penalty
+        Small MILP objective penalty for zero-evidence reactions. This keeps
+        required spontaneous/transport reactions available through growth
+        constraints, while discouraging arbitrary free extras.
 
     Returns
     -------
@@ -66,13 +75,14 @@ def carve_model(
     """
     print("[gemiz] Setting up MILP carving problem...")
     milp_data = setup_milp(universal_model, reaction_scores, min_growth,
-                           epsilon, bigM)
+                           epsilon, bigM, neutral_penalty)
 
     n = milp_data["n_reactions"]
     m = milp_data["n_metabolites"]
     scores = milp_data["scores"]
-    n_pos = int(np.sum(scores > 0))
-    n_neg = int(np.sum(scores < 0))
+    raw_scores = milp_data["raw_scores"]
+    n_pos = int(np.sum(raw_scores > 0))
+    n_neg = int(np.sum(raw_scores < 0))
     n_neu = n - n_pos - n_neg
 
     print(f"[gemiz]   Reactions: {n}")
@@ -81,6 +91,8 @@ def carve_model(
     print(f"[gemiz]   Positive-score reactions: {n_pos}")
     print(f"[gemiz]   Negative-score reactions: {n_neg}")
     print(f"[gemiz]   Neutral reactions: {n_neu}")
+    if neutral_penalty != 0.0 and n_neu:
+        print(f"[gemiz]   Neutral-reaction penalty: {neutral_penalty:g}")
 
     # ---- detect universal mode (multiple biomass candidates) ----
     biomass_candidates = milp_data.get("biomass_candidates", [])
@@ -132,7 +144,7 @@ def carve_model(
     )
 
     n_kept = len(carved.reactions)
-    print(f"[gemiz] Carving complete:")
+    print("[gemiz] Carving complete:")
     print(f"[gemiz]   Reactions kept: {n_kept}")
     print(f"[gemiz]   Reactions removed: {n - n_kept}")
     print(f"[gemiz]   Metabolites: {len(carved.metabolites)}")
@@ -212,7 +224,6 @@ def _select_biomass(
 
         if 0 < gr < 10.0:
             best_id = rid
-            best_growth = gr
             print(f"[gemiz]   Selected: {rid} (from {source}) "
                   f"growth={gr:.4f} h^-1")
             break
@@ -237,6 +248,7 @@ def setup_milp(
     min_growth: float,
     epsilon: float,
     bigM: float,
+    neutral_penalty: float = -0.01,
 ) -> dict:
     """Build MILP problem data from a COBRA model and reaction scores.
 
@@ -256,10 +268,13 @@ def setup_milp(
 
     lb = np.array([r.lower_bound for r in model.reactions], dtype=np.float64)
     ub = np.array([r.upper_bound for r in model.reactions], dtype=np.float64)
-    scores = np.array(
+    raw_scores = np.array(
         [reaction_scores.get(r.id, 0.0) for r in model.reactions],
         dtype=np.float64,
     )
+    scores = raw_scores.copy()
+    if neutral_penalty != 0.0:
+        scores[raw_scores == 0.0] = neutral_penalty
 
     # ---- biomass reaction(s) ----
     # Primary: reaction with non-zero objective coefficient
@@ -307,6 +322,7 @@ def setup_milp(
         "lb": lb,
         "ub": ub,
         "scores": scores,
+        "raw_scores": raw_scores,
         "biomass_idx": biomass_idx,
         "biomass_candidates": biomass_candidates,
         "n_reactions": n,
@@ -504,20 +520,37 @@ def gapfill_model(
         print("[gemiz]   No candidate reactions available for gap-filling.")
         return carved_model.copy(), []
 
-    print(f"[gemiz]   {len(candidates)} candidate reactions. "
-          f"Trying MILP gapfill (timeout {timeout:.0f}s)...")
-    added_ids = _try_cobra_gapfill(carved_model, template_model, timeout)
+    added_ids: list[str] | None = []
+    if len(candidates) > 1000:
+        print(f"[gemiz]   {len(candidates)} candidate reactions. "
+              "Trying fast prioritized gapfill first...")
+        added_ids = _fast_forward_gapfill(
+            carved_model, template_model, candidates, reaction_scores or {}
+        )
+
+    if not added_ids:
+        print(f"[gemiz]   {len(candidates)} candidate reactions. "
+              f"Trying MILP gapfill (timeout {timeout:.0f}s)...")
+        added_ids = _try_cobra_gapfill(carved_model, template_model, timeout)
 
     if added_ids is None:
         print("[gemiz]   MILP gapfill timed out — switching to greedy heuristic...")
-        added_ids = _greedy_gapfill(
+        added_ids = _fast_forward_gapfill(
             carved_model, template_model, candidates, reaction_scores or {}
         )
+        if not added_ids:
+            added_ids = _greedy_gapfill(
+                carved_model, template_model, candidates, reaction_scores or {}
+            )
     elif not added_ids:
         print("[gemiz]   MILP gapfill found no solution — switching to greedy heuristic...")
-        added_ids = _greedy_gapfill(
+        added_ids = _fast_forward_gapfill(
             carved_model, template_model, candidates, reaction_scores or {}
         )
+        if not added_ids:
+            added_ids = _greedy_gapfill(
+                carved_model, template_model, candidates, reaction_scores or {}
+            )
     else:
         print(f"[gemiz]   MILP gapfill found {len(added_ids)} reactions to add.")
 
@@ -560,6 +593,92 @@ def _try_cobra_gapfill(
     if t.is_alive():
         return None  # timed out
     return result[0]
+
+
+def _gapfill_candidate_key(
+    reaction: "cobra.Reaction",
+    reaction_scores: "dict[str, float]",
+) -> tuple[int, float, str]:
+    """Sort likely one-reaction gapfill fixes before broad internals."""
+    rid = reaction.id.lower()
+    if rid.startswith(("sink_", "dm_", "sk_")):
+        group = 0
+    elif rid.startswith("ex_"):
+        group = 1
+    elif rid.endswith(("tex", "texi", "tpp")) or "transport" in reaction.name.lower():
+        group = 2
+    else:
+        group = 3
+    return (group, -reaction_scores.get(reaction.id, 0.0), reaction.id)
+
+
+def _fast_forward_gapfill(
+    carved_model: "cobra.Model",
+    template_model: "cobra.Model",
+    candidates: "list[cobra.Reaction]",
+    reaction_scores: "dict[str, float]",
+    max_candidates: int = 250,
+) -> "list[str]":
+    """Try prioritized small candidate sets before the full greedy fallback."""
+    carved_ids = {r.id for r in carved_model.reactions}
+    ranked = sorted(
+        candidates,
+        key=lambda reaction: _gapfill_candidate_key(reaction, reaction_scores),
+    )
+
+    tried_sets: set[frozenset[str]] = set()
+    candidate_sets: list[list["cobra.Reaction"]] = []
+    for max_group in (0, 1, 2):
+        group = [
+            rxn for rxn in ranked
+            if _gapfill_candidate_key(rxn, reaction_scores)[0] <= max_group
+        ]
+        if group:
+            candidate_sets.append(group[:max_candidates])
+    candidate_sets.append(ranked[:max_candidates])
+
+    for selected in candidate_sets:
+        selected_ids = frozenset(rxn.id for rxn in selected)
+        if not selected_ids or selected_ids in tried_sets:
+            continue
+        tried_sets.add(selected_ids)
+
+        test_model = _subset_template_model(
+            template_model,
+            carved_ids | set(selected_ids),
+            carved_model,
+        )
+
+        sol = test_model.optimize()
+        grows = sol.status == "optimal" and sol.objective_value > 1e-6
+        if grows:
+            for rxn in selected:
+                try:
+                    test_rxn = test_model.reactions.get_by_id(rxn.id)
+                except KeyError:
+                    continue
+                with test_model:
+                    test_model.remove_reactions([test_rxn], remove_orphans=False)
+                    sol = test_model.optimize()
+                    still_grows = (
+                        sol.status == "optimal"
+                        and sol.objective_value > 1e-6
+                    )
+                if still_grows:
+                    test_model.remove_reactions(
+                        [test_model.reactions.get_by_id(rxn.id)],
+                        remove_orphans=False,
+                    )
+
+            added = [
+                r.id for r in test_model.reactions
+                if r.id not in carved_ids
+            ]
+            print(f"[gemiz]   Fast gapfill restored growth with "
+                  f"{len(added)} reaction(s).")
+            return added
+
+    return []
 
 
 def _greedy_gapfill(

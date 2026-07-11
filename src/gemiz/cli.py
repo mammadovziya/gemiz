@@ -27,6 +27,12 @@ _UNIVERSAL_ESM      = "data/universal/db/esm_db"
 # CarveMe bacteria universe (preferred template for universal mode)
 _CARVEME_UNIVERSE   = "data/universal/carveme_bacteria.xml"
 
+
+def _mmseqs_prefix_exists(prefix: Path) -> bool:
+    """Return True when an MMseqs2 DB prefix has been created."""
+    return prefix.exists() or prefix.with_name(prefix.name + ".dbtype").exists()
+
+
 # ---------------------------------------------------------------------------
 # Root group
 # ---------------------------------------------------------------------------
@@ -216,6 +222,7 @@ def carve(
     # Detect universal mode: no --organism and no explicit --template/--reference
     _univ_faa      = Path(_UNIVERSAL_FAA)
     _univ_mmseqs   = Path(_UNIVERSAL_MMSEQS)
+    _univ_mmseqs_prefix = _univ_mmseqs / "db"
     _univ_esm      = Path(_UNIVERSAL_ESM)
     _carveme_univ  = Path(_CARVEME_UNIVERSE)
     _univ_template = Path(_UNIVERSAL_TEMPLATE)
@@ -240,7 +247,10 @@ def carve(
                               f"Expected {_carveme_univ} or {_univ_template}")
                 sys.exit(1)
         if reference is None:
-            reference = _univ_faa
+            if _mmseqs_prefix_exists(_univ_mmseqs_prefix):
+                reference = _univ_mmseqs_prefix
+            else:
+                reference = _univ_faa
         # feature_table left as None — scoring uses universal_gpr.csv directly
         if esm_db is None and _univ_esm.exists():
             esm_db = _univ_esm
@@ -279,7 +289,7 @@ def carve(
         console.print(f"[bold red]Error:[/] template model not found: {template}")
         console.print("Download iML1515 or specify --template path.")
         sys.exit(1)
-    if not reference.exists():
+    if not (reference.exists() or _mmseqs_prefix_exists(reference)):
         console.print(f"[bold red]Error:[/] reference proteins not found: {reference}")
         sys.exit(1)
 
